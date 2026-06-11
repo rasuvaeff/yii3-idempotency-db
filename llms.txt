@@ -1,0 +1,96 @@
+# yii3-idempotency-db
+
+## Install
+
+```bash
+composer require rasuvaeff/yii3-idempotency-db
+```
+
+## Rules
+
+- `DbIdempotencyStorage` implements `IdempotencyStorage` from `rasuvaeff/yii3-idempotency`.
+- Atomic claim via `INSERT` with unique PK on `key` column.
+- Expired records are deleted on `load()`.
+- Invalid row data throws `InvalidRecordRowException`.
+- `key` is a SQL reserved word — always quoted in raw SQL.
+- `headers` stored as JSON `array<string, list<string>>`.
+
+## API Reference
+
+### DbIdempotencyStorage
+
+```php
+use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
+
+$storage = new DbIdempotencyStorage(
+    db: $connection,           // Yiisoft\Db\Connection\ConnectionInterface
+    clock: $clock,             // Psr\Clock\ClockInterface
+    table: 'idempotency_keys', // optional, default 'idempotency_keys'
+);
+
+// Atomic claim — returns true if claimed, false if key exists or DB error
+$storage->claim($key, $fingerprint): bool;
+
+// Store completed response record (updates claimed row)
+$storage->store($record): void;
+
+// Load existing record, returns null if missing/expired
+$storage->load($key): ?IdempotencyRecord;
+
+// Release claim on handler error (deletes row)
+$storage->release($key): void;
+```
+
+### Exception\InvalidRecordRowException
+
+Thrown when a DB row cannot be mapped to `IdempotencyRecord`:
+- Missing required column
+- Invalid data type (non-numeric status_code, bad JSON headers, etc.)
+- Invalid datetime in `expires_at`
+
+```php
+use Rasuvaeff\Yii3IdempotencyDb\Exception\InvalidRecordRowException;
+
+try {
+    $record = $storage->load($key);
+} catch (InvalidRecordRowException $e) {
+    // handle corrupted row
+}
+```
+
+### Table schema
+
+| Column | Type | Default | Description |
+|---|---|---|---|
+| `key` | `VARCHAR(190)` PK | — | Idempotency key |
+| `fingerprint` | `VARCHAR(64)` | — | SHA-256 hash |
+| `status_code` | `SMALLINT` | `0` | HTTP status code |
+| `headers` | `TEXT` | `'{}'` | JSON response headers |
+| `body` | `TEXT` | `''` | Response body |
+| `expires_at` | `VARCHAR(30)` | — | Expiration datetime |
+| `claimed` | `BOOLEAN` | `false` | In-progress flag |
+
+### Migration
+
+```php
+use M260611000000CreateIdempotencyKeysTable;
+
+$migration = new M260611000000CreateIdempotencyKeysTable();
+// or with custom table name:
+$migration = new M260611000000CreateIdempotencyKeysTable(table: 'my_keys');
+
+$migration->up($builder);
+$migration->down($builder);
+```
+
+### Yii3 DI config
+
+```php
+// config/di.php — binds IdempotencyStorage to DbIdempotencyStorage
+// config/params.php
+return [
+    'rasuvaeff/yii3-idempotency-db' => [
+        'table' => 'idempotency_keys',
+    ],
+];
+```
