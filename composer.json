@@ -22,7 +22,7 @@
         "source": "https://github.com/rasuvaeff/yii3-idempotency-db"
     },
     "require": {
-        "php": "^8.3",
+        "php": "8.1 - 8.5",
         "psr/clock": "^1.0",
         "rasuvaeff/yii3-idempotency": "^1.0",
         "yiisoft/db": "^2.0",
@@ -37,6 +37,7 @@
         "rector/rector": "^2.4",
         "roave/backward-compatibility-check": "^8.0",
         "vimeo/psalm": "^6.16",
+        "yiisoft/cache": "^3.2",
         "yiisoft/db-sqlite": "^2.0",
         "yiisoft/test-support": "^3.0"
     },
