@@ -54,11 +54,19 @@ make release-check
 
 - DB adapter is durable storage only — claim atomicity, response replay, TTL
   expiration, and conflict detection are guaranteed by the core middleware contract.
-- `claim()` uses `INSERT` with unique PK for atomicity. Returns `false` on
-  duplicate key or DB error.
-- `store()` updates the claimed row with the full response data and sets
-  `claimed = 0`.
+- `claim()` uses `INSERT` with unique PK for atomicity. Returns `false` ONLY on
+  duplicate key (`IntegrityException`); any other DB error propagates — a DB
+  outage must not look like an idempotency conflict.
+- Claim rows carry `expires_at = now + claimTtlSeconds` (in-flight deadline).
+  `load()` returns `null` for an active claim WITHOUT deleting the row; stale
+  claims (deadline passed) are deleted and re-claimable.
+- `store()` upserts the row with the full response data and sets `claimed = 0`.
 - `load()` checks TTL; expired records are deleted and `null` is returned.
+- Records are rehydrated via `IdempotencyRecord::restore()` (core >= 1.0 API);
+  the constructor is private.
+- All timestamps are formatted/parsed in UTC (`Y-m-d H:i:s`) — never rely on the
+  PHP default timezone.
+- `deleteExpired()` is the bulk GC entry point (uses the `expires_at` index).
 - `release()` deletes the row (used on handler error to unclaim).
 - Row → `IdempotencyRecord` mapping lives in `RecordRowMapper` (pure, unit-tested).
 - Migrations are loaded by `yiisoft/db-migration` via `sourcePaths` (global-namespace

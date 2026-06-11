@@ -9,8 +9,12 @@ composer require rasuvaeff/yii3-idempotency-db
 ## Rules
 
 - `DbIdempotencyStorage` implements `IdempotencyStorage` from `rasuvaeff/yii3-idempotency`.
-- Atomic claim via `INSERT` with unique PK on `key` column.
-- Expired records are deleted on `load()`.
+- Atomic claim via `INSERT` with unique PK on `key` column; claim rows carry a
+  `claimTtlSeconds` deadline (stale claims from crashed processes are re-claimable).
+- Active claims make `load()` return `null` without deleting the row.
+- Expired records are deleted on `load()`; bulk cleanup via `deleteExpired()`.
+- `claim()` returns `false` only on duplicate key; other DB errors propagate.
+- Timestamps are stored in UTC (`Y-m-d H:i:s`).
 - Invalid row data throws `InvalidRecordRowException`.
 - `key` is a SQL reserved word — always quoted in raw SQL.
 - `headers` stored as JSON `array<string, list<string>>`.
@@ -23,22 +27,26 @@ composer require rasuvaeff/yii3-idempotency-db
 use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
 
 $storage = new DbIdempotencyStorage(
-    db: $connection,           // Yiisoft\Db\Connection\ConnectionInterface
-    clock: $clock,             // Psr\Clock\ClockInterface
-    table: 'idempotency_keys', // optional, default 'idempotency_keys'
+    db: $connection,            // Yiisoft\Db\Connection\ConnectionInterface
+    clock: $clock,              // Psr\Clock\ClockInterface
+    table: 'idempotency_keys',  // optional, default 'idempotency_keys'
+    claimTtlSeconds: 3600,      // optional, in-flight claim deadline
 );
 
-// Atomic claim — returns true if claimed, false if key exists or DB error
+// Atomic claim — true if claimed, false if the key is already taken
 $storage->claim($key, $fingerprint): bool;
 
-// Store completed response record (updates claimed row)
+// Store completed response record (upserts the claimed row)
 $storage->store($record): void;
 
-// Load existing record, returns null if missing/expired
+// Load existing record; null if missing, expired, or claim still in flight
 $storage->load($key): ?IdempotencyRecord;
 
 // Release claim on handler error (deletes row)
 $storage->release($key): void;
+
+// Bulk-delete all expired rows; returns number of deleted rows
+$storage->deleteExpired(): int;
 ```
 
 ### Exception\InvalidRecordRowException
@@ -62,12 +70,12 @@ try {
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `key` | `VARCHAR(190)` PK | — | Idempotency key |
+| `key` | `VARCHAR(255)` PK | — | Idempotency key |
 | `fingerprint` | `VARCHAR(64)` | — | SHA-256 hash |
 | `status_code` | `SMALLINT` | `0` | HTTP status code |
 | `headers` | `TEXT` | `'{}'` | JSON response headers |
 | `body` | `TEXT` | `''` | Response body |
-| `expires_at` | `VARCHAR(30)` | — | Expiration datetime |
+| `expires_at` | `VARCHAR(30)` | — | Expiration datetime (UTC) |
 | `claimed` | `BOOLEAN` | `false` | In-progress flag |
 
 ### Migration
@@ -91,6 +99,7 @@ $migration->down($builder);
 return [
     'rasuvaeff/yii3-idempotency-db' => [
         'table' => 'idempotency_keys',
+        'claimTtlSeconds' => 3600,
     ],
 ];
 ```

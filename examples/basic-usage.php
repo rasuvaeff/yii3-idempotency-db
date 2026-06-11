@@ -28,7 +28,7 @@ $db->open();
 
 $db->createCommand(sql: '
     CREATE TABLE idempotency_keys (
-        "key"        VARCHAR(190) PRIMARY KEY,
+        "key"        VARCHAR(255) PRIMARY KEY,
         fingerprint  VARCHAR(64)  NOT NULL,
         status_code  INTEGER      NOT NULL DEFAULT 0,
         headers      TEXT         NOT NULL DEFAULT \'{}\',
@@ -48,7 +48,7 @@ $claimed = $storage->claim(key: $key, fingerprint: $fingerprint);
 echo $claimed ? 'OK' : 'FAIL';
 echo "\n";
 
-$record = new IdempotencyRecord(
+$record = IdempotencyRecord::restore(
     key: $key,
     fingerprint: $fingerprint,
     response: new IdempotencyResponse(

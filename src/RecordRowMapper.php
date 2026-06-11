@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3IdempotencyDb;
 
-use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Idempotency\IdempotencyFingerprint;
 use Rasuvaeff\Yii3Idempotency\IdempotencyKey;
 use Rasuvaeff\Yii3Idempotency\IdempotencyRecord;
@@ -16,9 +15,15 @@ use Rasuvaeff\Yii3IdempotencyDb\Exception\InvalidRecordRowException;
  */
 final readonly class RecordRowMapper
 {
-    public function __construct(
-        private ClockInterface $clock,
-    ) {}
+    /**
+     * @param array<array-key, mixed> $row
+     */
+    public function expiresAt(array $row): \DateTimeImmutable
+    {
+        return $this->parseExpiresAt(
+            expiresAt: $this->extractString(row: $row, column: 'expires_at'),
+        );
+    }
 
     /**
      * @param array<array-key, mixed> $row
@@ -44,7 +49,7 @@ final readonly class RecordRowMapper
 
         $expiresAtDate = $this->parseExpiresAt(expiresAt: $expiresAt);
 
-        return new IdempotencyRecord(
+        return IdempotencyRecord::restore(
             key: $key,
             fingerprint: new IdempotencyFingerprint(hash: $fingerprintHash),
             response: new IdempotencyResponse(
@@ -73,15 +78,15 @@ final readonly class RecordRowMapper
             }
 
             try {
-                $decoded = json_decode(json: $row['headers'], associative: true, flags: JSON_THROW_ON_ERROR);
+                return $this->validateHeaders(
+                    headers: json_decode(json: $row['headers'], associative: true, flags: JSON_THROW_ON_ERROR),
+                );
             } catch (\JsonException $e) {
                 throw new InvalidRecordRowException(
                     message: sprintf('Invalid "headers" JSON: %s', $e->getMessage()),
                     previous: $e,
                 );
             }
-
-            return $this->validateHeaders(headers: $decoded);
         }
 
         if (\is_array($row['headers'])) {
@@ -109,41 +114,49 @@ final readonly class RecordRowMapper
 
         $result = [];
 
-        foreach ($headers as $name => $values) {
+        foreach (array_keys($headers) as $name) {
             if (!\is_string($name)) {
                 throw new InvalidRecordRowException(
                     message: sprintf('Invalid header name: expected string, got %s', get_debug_type($name)),
                 );
             }
 
-            if (!\is_array($values)) {
-                throw new InvalidRecordRowException(
-                    message: sprintf('Invalid header "%s" values: expected array, got %s', $name, get_debug_type($values)),
-                );
-            }
-
-            $validatedValues = [];
-
-            foreach ($values as $i => $value) {
-                if (!\is_string($value)) {
-                    throw new InvalidRecordRowException(
-                        message: sprintf('Invalid header "%s" value at index %d: expected string, got %s', $name, $i, get_debug_type($value)),
-                    );
-                }
-
-                $validatedValues[] = $value;
-            }
-
-            $result[$name] = $validatedValues;
+            $result[$name] = $this->validateHeaderValues(name: $name, values: $headers[$name]);
         }
 
         return $result;
     }
 
+    /**
+     * @return list<string>
+     */
+    private function validateHeaderValues(string $name, mixed $values): array
+    {
+        if (!\is_array($values)) {
+            throw new InvalidRecordRowException(
+                message: sprintf('Invalid header "%s" values: expected array, got %s', $name, get_debug_type($values)),
+            );
+        }
+
+        $validatedValues = [];
+
+        foreach ($values as $i => $value) {
+            if (!\is_string($value)) {
+                throw new InvalidRecordRowException(
+                    message: sprintf('Invalid header "%s" value at index %d: expected string, got %s', $name, $i, get_debug_type($value)),
+                );
+            }
+
+            $validatedValues[] = $value;
+        }
+
+        return $validatedValues;
+    }
+
     private function parseExpiresAt(string $expiresAt): \DateTimeImmutable
     {
         try {
-            return new \DateTimeImmutable($expiresAt);
+            return new \DateTimeImmutable($expiresAt, new \DateTimeZone('UTC'));
         } catch (\Exception $e) {
             throw new InvalidRecordRowException(
                 message: sprintf('Invalid "expires_at" datetime: %s', $expiresAt),

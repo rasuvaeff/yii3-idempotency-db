@@ -34,7 +34,7 @@ final class M260611000000CreateIdempotencyKeysTable implements RevertibleMigrati
         $b->createTable(
             $this->table,
             [
-                'key' => 'string(190) NOT NULL PRIMARY KEY',
+                'key' => 'string(255) NOT NULL PRIMARY KEY',
                 'fingerprint' => 'string(64) NOT NULL',
                 'status_code' => 'smallint NOT NULL DEFAULT 0',
                 'headers' => "text NOT NULL DEFAULT '{}'",

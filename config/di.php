@@ -20,6 +20,7 @@ return [
             db: $db,
             clock: $clock,
             table: $config['table'] ?? 'idempotency_keys',
+            claimTtlSeconds: (int) ($config['claimTtlSeconds'] ?? 3600),
         );
     },
 ];

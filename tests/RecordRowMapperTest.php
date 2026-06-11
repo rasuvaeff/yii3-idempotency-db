@@ -8,7 +8,6 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3IdempotencyDb\Exception\InvalidRecordRowException;
 use Rasuvaeff\Yii3IdempotencyDb\RecordRowMapper;
 
@@ -17,14 +16,10 @@ final class RecordRowMapperTest extends TestCase
 {
     private RecordRowMapper $mapper;
 
-    private ClockInterface $clock;
-
     #[\Override]
     protected function setUp(): void
     {
-        $this->clock = $this->createStub(ClockInterface::class);
-        $this->clock->method('now')->willReturn(new \DateTimeImmutable('2026-06-11 12:00:00'));
-        $this->mapper = new RecordRowMapper(clock: $this->clock);
+        $this->mapper = new RecordRowMapper();
     }
 
     #[Test]
@@ -132,6 +127,31 @@ final class RecordRowMapperTest extends TestCase
         $this->expectExceptionMessageMatches('/' . preg_quote($needle, '/') . '/');
 
         $this->mapper->map($row);
+    }
+
+    #[Test]
+    public function parsesExpiresAtAsUtc(): void
+    {
+        $record = $this->mapper->map($this->row(expiresAt: '2026-06-12 12:00:00'));
+
+        $this->assertSame('UTC', $record->expiresAt->getTimezone()->getName());
+    }
+
+    #[Test]
+    public function extractsExpiresAtFromRow(): void
+    {
+        $expiresAt = $this->mapper->expiresAt($this->row(expiresAt: '2026-06-12 12:00:00'));
+
+        $this->assertSame('2026-06-12 12:00:00', $expiresAt->format('Y-m-d H:i:s'));
+    }
+
+    #[Test]
+    public function expiresAtThrowsOnMissingColumn(): void
+    {
+        $this->expectException(InvalidRecordRowException::class);
+        $this->expectExceptionMessageMatches('/expires_at/');
+
+        $this->mapper->expiresAt(['key' => 'order-123']);
     }
 
     #[Test]

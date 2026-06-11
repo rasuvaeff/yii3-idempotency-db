@@ -34,7 +34,7 @@ final class SqliteIntegrationTest extends TestCase
     {
         $this->now = new \DateTimeImmutable('2026-06-11 12:00:00');
         $this->clock = $this->createStub(ClockInterface::class);
-        $this->clock->method('now')->willReturnCallback(fn (): \DateTimeImmutable => $this->now);
+        $this->clock->method('now')->willReturnCallback(fn(): \DateTimeImmutable => $this->now);
 
         $driver = new SqliteDriver(dsn: 'sqlite::memory:');
         $schemaCache = new SchemaCache(psrCache: new MemorySimpleCache());
@@ -43,7 +43,7 @@ final class SqliteIntegrationTest extends TestCase
 
         $this->db->createCommand(sql: '
             CREATE TABLE idempotency_keys (
-                "key"        VARCHAR(190) PRIMARY KEY,
+                "key"        VARCHAR(255) PRIMARY KEY,
                 fingerprint  VARCHAR(64)  NOT NULL,
                 status_code  INTEGER      NOT NULL DEFAULT 0,
                 headers      TEXT         NOT NULL DEFAULT \'{}\',
@@ -113,7 +113,7 @@ final class SqliteIntegrationTest extends TestCase
 
         $storage->claim(key: $key, fingerprint: $fingerprint);
 
-        $record = new IdempotencyRecord(
+        $record = IdempotencyRecord::restore(
             key: $key,
             fingerprint: $fingerprint,
             response: new IdempotencyResponse(
@@ -143,7 +143,7 @@ final class SqliteIntegrationTest extends TestCase
 
         $storage->claim(key: $key, fingerprint: $fingerprint);
 
-        $record = new IdempotencyRecord(
+        $record = IdempotencyRecord::restore(
             key: $key,
             fingerprint: $fingerprint,
             response: new IdempotencyResponse(
@@ -176,7 +176,7 @@ final class SqliteIntegrationTest extends TestCase
 
         $storage->claim(key: $key, fingerprint: $fingerprint);
 
-        $record = new IdempotencyRecord(
+        $record = IdempotencyRecord::restore(
             key: $key,
             fingerprint: $fingerprint,
             response: new IdempotencyResponse(
@@ -226,7 +226,7 @@ final class SqliteIntegrationTest extends TestCase
     {
         $this->db->createCommand(sql: '
             CREATE TABLE custom_idempotency (
-                "key"        VARCHAR(190) PRIMARY KEY,
+                "key"        VARCHAR(255) PRIMARY KEY,
                 fingerprint  VARCHAR(64)  NOT NULL,
                 status_code  INTEGER      NOT NULL DEFAULT 0,
                 headers      TEXT         NOT NULL DEFAULT \'{}\',
@@ -261,7 +261,7 @@ final class SqliteIntegrationTest extends TestCase
         $claimed = $storage->claim(key: $key, fingerprint: $fingerprint);
         $this->assertTrue($claimed);
 
-        $record = new IdempotencyRecord(
+        $record = IdempotencyRecord::restore(
             key: $key,
             fingerprint: $fingerprint,
             response: new IdempotencyResponse(
@@ -285,6 +285,118 @@ final class SqliteIntegrationTest extends TestCase
     }
 
     #[Test]
+    public function loadReturnsNullForActiveClaimWithoutDeletingIt(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'in-flight');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        $this->assertNull($storage->load(key: $key));
+        $this->assertNotNull($this->fetchRow('in-flight'));
+        $this->assertFalse($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1')));
+    }
+
+    #[Test]
+    public function staleClaimCanBeReclaimedAfterDeadline(): void
+    {
+        $storage = $this->createStorage(claimTtlSeconds: 60);
+
+        $key = new IdempotencyKey(value: 'stale-claim');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        $this->now = $this->now->modify('+61 seconds');
+
+        $this->assertNull($storage->load(key: $key));
+        $this->assertNull($this->fetchRow('stale-claim'));
+        $this->assertTrue($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1')));
+    }
+
+    #[Test]
+    public function claimPropagatesNonIntegrityErrors(): void
+    {
+        $storage = new DbIdempotencyStorage(
+            db: $this->db,
+            clock: $this->clock,
+            table: 'missing_table',
+        );
+
+        $this->expectException(\Throwable::class);
+
+        $storage->claim(
+            key: new IdempotencyKey(value: 'any'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        );
+    }
+
+    #[Test]
+    public function storeInsertsWhenClaimRowIsGone(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'released-key');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+
+        $record = IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'ok'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        );
+
+        $storage->store(record: $record);
+
+        $loaded = $storage->load(key: $key);
+
+        $this->assertNotNull($loaded);
+        $this->assertSame('ok', $loaded->response->body);
+    }
+
+    #[Test]
+    public function deleteExpiredRemovesOnlyExpiredRows(): void
+    {
+        $storage = $this->createStorage(claimTtlSeconds: 60);
+
+        $storage->claim(
+            key: new IdempotencyKey(value: 'old-claim'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        );
+        $storage->store(record: IdempotencyRecord::restore(
+            key: new IdempotencyKey(value: 'old-record'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h2'),
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'ok'),
+            expiresAt: $this->now->modify('+30 seconds'),
+        ));
+        $storage->store(record: IdempotencyRecord::restore(
+            key: new IdempotencyKey(value: 'fresh-record'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h3'),
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'ok'),
+            expiresAt: $this->now->modify('+7200 seconds'),
+        ));
+
+        $this->now = $this->now->modify('+90 seconds');
+
+        $deleted = $storage->deleteExpired();
+
+        $this->assertSame(2, $deleted);
+        $this->assertNull($this->fetchRow('old-claim'));
+        $this->assertNull($this->fetchRow('old-record'));
+        $this->assertNotNull($this->fetchRow('fresh-record'));
+    }
+
+    #[Test]
+    public function rejectsNonPositiveClaimTtl(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        new DbIdempotencyStorage(
+            db: $this->db,
+            clock: $this->clock,
+            claimTtlSeconds: 0,
+        );
+    }
+
+    #[Test]
     public function loadThrowsOnInvalidRowData(): void
     {
         $this->db->createCommand(sql: "
@@ -299,11 +411,12 @@ final class SqliteIntegrationTest extends TestCase
         $storage->load(key: new IdempotencyKey(value: 'bad-key'));
     }
 
-    private function createStorage(): DbIdempotencyStorage
+    private function createStorage(int $claimTtlSeconds = 3600): DbIdempotencyStorage
     {
         return new DbIdempotencyStorage(
             db: $this->db,
             clock: $this->clock,
+            claimTtlSeconds: $claimTtlSeconds,
         );
     }
 

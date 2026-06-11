@@ -40,6 +40,7 @@ $storage = new DbIdempotencyStorage(
     db: $connection,           // yiisoft/db ConnectionInterface
     clock: $clock,             // PSR-20 ClockInterface
     table: 'idempotency_keys',
+    claimTtlSeconds: 3600,     // deadline for in-flight claims (stale-claim recovery)
 );
 
 $middleware = new IdempotencyMiddleware(
@@ -70,12 +71,12 @@ $migration->up($builder);
 
 | Column | Type | Description |
 |---|---|---|
-| `key` | `VARCHAR(190)` PK | Idempotency key value |
-| `fingerprint` | `VARCHAR(64)` | SHA-256 hash of method + path + body |
+| `key` | `VARCHAR(255)` PK | Idempotency key value |
+| `fingerprint` | `VARCHAR(64)` | SHA-256 hash of method + path + query + body |
 | `status_code` | `SMALLINT` | HTTP response status code |
 | `headers` | `TEXT` | JSON-encoded response headers (`array<string, list<string>>`) |
 | `body` | `TEXT` | Response body |
-| `expires_at` | `VARCHAR(30)` | Expiration timestamp |
+| `expires_at` | `VARCHAR(30)` | Expiration timestamp (UTC, `Y-m-d H:i:s`) |
 | `claimed` | `BOOLEAN` | Whether the key is claimed (in-progress) |
 
 ### Yii3 integration
@@ -89,6 +90,7 @@ Default params:
 return [
     'rasuvaeff/yii3-idempotency-db' => [
         'table' => 'idempotency_keys',
+        'claimTtlSeconds' => 3600,
     ],
 ];
 ```
@@ -97,13 +99,20 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
 
 ## How it works
 
-1. **Claim**: `INSERT` with unique PK on `key`. If the insert succeeds, the key is
-   claimed atomically. If the key already exists, `claim()` returns `false`.
-2. **Store**: After the handler completes, the response is serialized into the row
-   and `claimed` is set to `0`.
-3. **Load**: On a subsequent request with the same key, `load()` reads the row,
-   reconstructs the `IdempotencyRecord`, and checks TTL. Expired records are deleted.
-4. **Release**: If the handler throws, `release()` deletes the claim row.
+1. **Claim**: `INSERT` with unique PK on `key` and `expires_at = now + claimTtlSeconds`.
+   If the insert succeeds, the key is claimed atomically. A duplicate key raises a DB
+   integrity error, which `claim()` converts to `false`; any other DB error propagates.
+2. **Store**: After the handler completes, the response is upserted into the row
+   and `claimed` is set to `0`; `expires_at` becomes the record TTL deadline.
+3. **Load**: On a subsequent request with the same key, `load()` reads the row.
+   An active claim (`claimed = 1`, deadline not reached) returns `null` without
+   deleting the row — the middleware then fails its own `claim()` and responds 409.
+   A stale claim (deadline passed — crashed process) is deleted and may be re-claimed.
+   A completed record is rehydrated via `IdempotencyRecord::restore()` and checked
+   against its TTL; expired records are deleted.
+4. **Release**: If the handler throws (or returns 5xx), `release()` deletes the claim row.
+5. **Cleanup**: `deleteExpired()` removes all rows past `expires_at` (uses the
+   `idx_idempotency_expires_at` index) — call it from a cron task.
 
 ## Security
 
@@ -111,6 +120,8 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
 - Fingerprints are SHA-256 hashes — no raw user input stored beyond the key.
 - Response bodies are stored as-is; avoid storing sensitive data without encryption
   at the application layer.
+- All timestamps are stored in UTC — storage behavior does not depend on the PHP
+  default timezone.
 
 ## Examples
 
