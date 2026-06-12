@@ -313,6 +313,45 @@ final class SqliteIntegrationTest extends TestCase
     }
 
     #[Test]
+    public function staleClaimAtExactDeadlineIsReclaimable(): void
+    {
+        $storage = $this->createStorage(claimTtlSeconds: 60);
+        $key = new IdempotencyKey(value: 'edge-claim');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        // now == expires_at exactly: stale under `>=`, still active under `>`.
+        $this->now = $this->now->modify('+60 seconds');
+
+        $this->assertNull($storage->load(key: $key));
+        $this->assertTrue($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h2')));
+    }
+
+    #[Test]
+    public function allowsClaimTtlOfOne(): void
+    {
+        // 1 is valid (`< 1`, not `<= 1`): must not throw.
+        $storage = new DbIdempotencyStorage(db: $this->db, clock: $this->clock, claimTtlSeconds: 1);
+
+        $this->assertTrue($storage->claim(
+            key: new IdempotencyKey(value: 'ttl-one'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        ));
+    }
+
+    #[Test]
+    public function claimRowStoresZeroStatusCode(): void
+    {
+        $this->createStorage()->claim(
+            key: new IdempotencyKey(value: 'zero-status'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        );
+
+        $row = $this->fetchRow('zero-status');
+        $this->assertNotNull($row);
+        $this->assertSame(0, (int) $row['status_code']);
+    }
+
+    #[Test]
     public function claimPropagatesNonIntegrityErrors(): void
     {
         $storage = new DbIdempotencyStorage(

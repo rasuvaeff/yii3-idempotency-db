@@ -105,6 +105,10 @@ final class RecordRowMapperTest extends TestCase
         yield 'non-string fingerprint' => [['fingerprint' => 123] + $base, 'fingerprint'];
         yield 'missing status_code' => [self::without($base, 'status_code'), 'status_code'];
         yield 'non-numeric status_code' => [['status_code' => 'abc'] + $base, 'status_code'];
+        yield 'status_code with trailing junk' => [['status_code' => '12x'] + $base, 'status_code'];
+        yield 'status_code with leading junk' => [['status_code' => 'x12'] + $base, 'status_code'];
+        yield 'headers native non-string name' => [['headers' => [0 => ['v']]] + $base, 'header name'];
+        yield 'headers value not array' => [['headers' => ['X' => 'str']] + $base, 'values'];
         yield 'missing headers' => [self::without($base, 'headers'), 'headers'];
         yield 'invalid headers type' => [['headers' => 123] + $base, 'headers'];
         yield 'malformed headers json' => [['headers' => 'not-json'] + $base, 'headers'];
