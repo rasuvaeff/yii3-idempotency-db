@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3IdempotencyDb\Tests\Integration;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Idempotency\IdempotencyFingerprint;
 use Rasuvaeff\Yii3Idempotency\IdempotencyKey;
@@ -14,14 +11,21 @@ use Rasuvaeff\Yii3Idempotency\IdempotencyRecord;
 use Rasuvaeff\Yii3Idempotency\IdempotencyResponse;
 use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
 use Rasuvaeff\Yii3IdempotencyDb\Exception\InvalidRecordRowException;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Lifecycle\AfterTest;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 
-#[CoversClass(DbIdempotencyStorage::class)]
-final class SqliteIntegrationTest extends TestCase
+#[Test]
+#[Covers(DbIdempotencyStorage::class)]
+final class SqliteIntegrationTest
 {
     private ConnectionInterface $db;
 
@@ -29,12 +33,22 @@ final class SqliteIntegrationTest extends TestCase
 
     private \DateTimeImmutable $now;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->now = new \DateTimeImmutable('2026-06-11 12:00:00');
-        $this->clock = $this->createStub(ClockInterface::class);
-        $this->clock->method('now')->willReturnCallback(fn(): \DateTimeImmutable => $this->now);
+        $now = &$this->now;
+        $this->clock = new class ($now) implements ClockInterface {
+            public function __construct(
+                private \DateTimeImmutable &$now,
+            ) {}
+
+            #[\Override]
+            public function now(): \DateTimeImmutable
+            {
+                return $this->now;
+            }
+        };
 
         $driver = new SqliteDriver(dsn: 'sqlite::memory:');
         $schemaCache = new SchemaCache(psrCache: new MemorySimpleCache());
@@ -54,23 +68,21 @@ final class SqliteIntegrationTest extends TestCase
         ')->execute();
     }
 
-    #[\Override]
-    protected function tearDown(): void
+    #[AfterTest]
+    public function tearDown(): void
     {
         $this->db->close();
     }
 
-    #[Test]
     public function loadReturnsNullForMissingKey(): void
     {
         $storage = $this->createStorage();
 
         $result = $storage->load(key: new IdempotencyKey(value: 'missing-key'));
 
-        $this->assertNull($result);
+        Assert::null($result);
     }
 
-    #[Test]
     public function claimInsertsRowAndReturnsTrue(): void
     {
         $storage = $this->createStorage();
@@ -80,15 +92,14 @@ final class SqliteIntegrationTest extends TestCase
 
         $result = $storage->claim(key: $key, fingerprint: $fingerprint);
 
-        $this->assertTrue($result);
+        Assert::true($result);
 
         $row = $this->fetchRow('order-123');
-        $this->assertNotNull($row);
-        $this->assertSame('abc123', $row['fingerprint']);
-        $this->assertSame(1, (int) $row['claimed']);
+        Assert::notNull($row);
+        Assert::same($row['fingerprint'], 'abc123');
+        Assert::same((int) $row['claimed'], 1);
     }
 
-    #[Test]
     public function claimReturnsFalseForDuplicateKey(): void
     {
         $storage = $this->createStorage();
@@ -99,11 +110,10 @@ final class SqliteIntegrationTest extends TestCase
         $first = $storage->claim(key: $key, fingerprint: $fingerprint);
         $second = $storage->claim(key: $key, fingerprint: $fingerprint);
 
-        $this->assertTrue($first);
-        $this->assertFalse($second);
+        Assert::true($first);
+        Assert::false($second);
     }
 
-    #[Test]
     public function storeUpdatesRecord(): void
     {
         $storage = $this->createStorage();
@@ -127,13 +137,12 @@ final class SqliteIntegrationTest extends TestCase
         $storage->store(record: $record);
 
         $row = $this->fetchRow('order-123');
-        $this->assertNotNull($row);
-        $this->assertSame(200, (int) $row['status_code']);
-        $this->assertSame('{"status":"ok"}', $row['body']);
-        $this->assertSame(0, (int) $row['claimed']);
+        Assert::notNull($row);
+        Assert::same((int) $row['status_code'], 200);
+        Assert::same($row['body'], '{"status":"ok"}');
+        Assert::same((int) $row['claimed'], 0);
     }
 
-    #[Test]
     public function loadReturnsStoredRecord(): void
     {
         $storage = $this->createStorage();
@@ -158,15 +167,14 @@ final class SqliteIntegrationTest extends TestCase
 
         $loaded = $storage->load(key: $key);
 
-        $this->assertNotNull($loaded);
-        $this->assertSame('order-456', $loaded->key->value);
-        $this->assertSame('def456', $loaded->fingerprint->hash);
-        $this->assertSame(201, $loaded->response->statusCode);
-        $this->assertSame('{"id":1}', $loaded->response->body);
-        $this->assertSame(['X-Request-Id' => ['req-1']], $loaded->response->headers);
+        Assert::notNull($loaded);
+        Assert::same($loaded->key->value, 'order-456');
+        Assert::same($loaded->fingerprint->hash, 'def456');
+        Assert::same($loaded->response->statusCode, 201);
+        Assert::same($loaded->response->body, '{"id":1}');
+        Assert::same($loaded->response->headers, ['X-Request-Id' => ['req-1']]);
     }
 
-    #[Test]
     public function loadReturnsNullForExpiredRecord(): void
     {
         $storage = $this->createStorage();
@@ -193,10 +201,9 @@ final class SqliteIntegrationTest extends TestCase
 
         $loaded = $storage->load(key: $key);
 
-        $this->assertNull($loaded);
+        Assert::null($loaded);
     }
 
-    #[Test]
     public function releaseDeletesRecord(): void
     {
         $storage = $this->createStorage();
@@ -208,20 +215,18 @@ final class SqliteIntegrationTest extends TestCase
         $storage->release(key: $key);
 
         $row = $this->fetchRow('to-release');
-        $this->assertNull($row);
+        Assert::null($row);
     }
 
-    #[Test]
     public function releaseIsNoopForMissingKey(): void
     {
         $storage = $this->createStorage();
 
         $storage->release(key: new IdempotencyKey(value: 'never-existed'));
 
-        $this->expectNotToPerformAssertions();
+        Assert::true(true);
     }
 
-    #[Test]
     public function usesCustomTableName(): void
     {
         $this->db->createCommand(sql: '
@@ -247,10 +252,9 @@ final class SqliteIntegrationTest extends TestCase
 
         $result = $storage->claim(key: $key, fingerprint: $fingerprint);
 
-        $this->assertTrue($result);
+        Assert::true($result);
     }
 
-    #[Test]
     public function fullClaimStoreLoadCycle(): void
     {
         $storage = $this->createStorage();
@@ -259,7 +263,7 @@ final class SqliteIntegrationTest extends TestCase
         $fingerprint = new IdempotencyFingerprint(hash: 'cycle-hash');
 
         $claimed = $storage->claim(key: $key, fingerprint: $fingerprint);
-        $this->assertTrue($claimed);
+        Assert::true($claimed);
 
         $record = IdempotencyRecord::restore(
             key: $key,
@@ -276,15 +280,14 @@ final class SqliteIntegrationTest extends TestCase
 
         $loaded = $storage->load(key: $key);
 
-        $this->assertNotNull($loaded);
-        $this->assertTrue($loaded->key->equals($key));
-        $this->assertTrue($loaded->fingerprint->equals($fingerprint));
-        $this->assertSame(200, $loaded->response->statusCode);
-        $this->assertSame('{"result":"success"}', $loaded->response->body);
-        $this->assertSame(['Content-Type' => ['application/json']], $loaded->response->headers);
+        Assert::notNull($loaded);
+        Assert::true($loaded->key->equals($key));
+        Assert::true($loaded->fingerprint->equals($fingerprint));
+        Assert::same($loaded->response->statusCode, 200);
+        Assert::same($loaded->response->body, '{"result":"success"}');
+        Assert::same($loaded->response->headers, ['Content-Type' => ['application/json']]);
     }
 
-    #[Test]
     public function loadReturnsNullForActiveClaimWithoutDeletingIt(): void
     {
         $storage = $this->createStorage();
@@ -292,12 +295,11 @@ final class SqliteIntegrationTest extends TestCase
         $key = new IdempotencyKey(value: 'in-flight');
         $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
 
-        $this->assertNull($storage->load(key: $key));
-        $this->assertNotNull($this->fetchRow('in-flight'));
-        $this->assertFalse($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1')));
+        Assert::null($storage->load(key: $key));
+        Assert::notNull($this->fetchRow('in-flight'));
+        Assert::false($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1')));
     }
 
-    #[Test]
     public function staleClaimCanBeReclaimedAfterDeadline(): void
     {
         $storage = $this->createStorage(claimTtlSeconds: 60);
@@ -307,38 +309,33 @@ final class SqliteIntegrationTest extends TestCase
 
         $this->now = $this->now->modify('+61 seconds');
 
-        $this->assertNull($storage->load(key: $key));
-        $this->assertNull($this->fetchRow('stale-claim'));
-        $this->assertTrue($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1')));
+        Assert::null($storage->load(key: $key));
+        Assert::null($this->fetchRow('stale-claim'));
+        Assert::true($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1')));
     }
 
-    #[Test]
     public function staleClaimAtExactDeadlineIsReclaimable(): void
     {
         $storage = $this->createStorage(claimTtlSeconds: 60);
         $key = new IdempotencyKey(value: 'edge-claim');
         $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
 
-        // now == expires_at exactly: stale under `>=`, still active under `>`.
         $this->now = $this->now->modify('+60 seconds');
 
-        $this->assertNull($storage->load(key: $key));
-        $this->assertTrue($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h2')));
+        Assert::null($storage->load(key: $key));
+        Assert::true($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h2')));
     }
 
-    #[Test]
     public function allowsClaimTtlOfOne(): void
     {
-        // 1 is valid (`< 1`, not `<= 1`): must not throw.
         $storage = new DbIdempotencyStorage(db: $this->db, clock: $this->clock, claimTtlSeconds: 1);
 
-        $this->assertTrue($storage->claim(
+        Assert::true($storage->claim(
             key: new IdempotencyKey(value: 'ttl-one'),
             fingerprint: new IdempotencyFingerprint(hash: 'h1'),
         ));
     }
 
-    #[Test]
     public function claimRowStoresZeroStatusCode(): void
     {
         $this->createStorage()->claim(
@@ -347,11 +344,10 @@ final class SqliteIntegrationTest extends TestCase
         );
 
         $row = $this->fetchRow('zero-status');
-        $this->assertNotNull($row);
-        $this->assertSame(0, (int) $row['status_code']);
+        Assert::notNull($row);
+        Assert::same((int) $row['status_code'], 0);
     }
 
-    #[Test]
     public function claimPropagatesNonIntegrityErrors(): void
     {
         $storage = new DbIdempotencyStorage(
@@ -360,7 +356,7 @@ final class SqliteIntegrationTest extends TestCase
             table: 'missing_table',
         );
 
-        $this->expectException(\Throwable::class);
+        Expect::exception(\Throwable::class);
 
         $storage->claim(
             key: new IdempotencyKey(value: 'any'),
@@ -368,7 +364,6 @@ final class SqliteIntegrationTest extends TestCase
         );
     }
 
-    #[Test]
     public function storeInsertsWhenClaimRowIsGone(): void
     {
         $storage = $this->createStorage();
@@ -387,11 +382,10 @@ final class SqliteIntegrationTest extends TestCase
 
         $loaded = $storage->load(key: $key);
 
-        $this->assertNotNull($loaded);
-        $this->assertSame('ok', $loaded->response->body);
+        Assert::notNull($loaded);
+        Assert::same($loaded->response->body, 'ok');
     }
 
-    #[Test]
     public function deleteExpiredRemovesOnlyExpiredRows(): void
     {
         $storage = $this->createStorage(claimTtlSeconds: 60);
@@ -417,16 +411,15 @@ final class SqliteIntegrationTest extends TestCase
 
         $deleted = $storage->deleteExpired();
 
-        $this->assertSame(2, $deleted);
-        $this->assertNull($this->fetchRow('old-claim'));
-        $this->assertNull($this->fetchRow('old-record'));
-        $this->assertNotNull($this->fetchRow('fresh-record'));
+        Assert::same($deleted, 2);
+        Assert::null($this->fetchRow('old-claim'));
+        Assert::null($this->fetchRow('old-record'));
+        Assert::notNull($this->fetchRow('fresh-record'));
     }
 
-    #[Test]
     public function rejectsNonPositiveClaimTtl(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
+        Expect::exception(\InvalidArgumentException::class);
 
         new DbIdempotencyStorage(
             db: $this->db,
@@ -435,7 +428,6 @@ final class SqliteIntegrationTest extends TestCase
         );
     }
 
-    #[Test]
     public function loadThrowsOnInvalidRowData(): void
     {
         $this->db->createCommand(sql: "
@@ -445,7 +437,7 @@ final class SqliteIntegrationTest extends TestCase
 
         $storage = $this->createStorage();
 
-        $this->expectException(InvalidRecordRowException::class);
+        Expect::exception(InvalidRecordRowException::class);
 
         $storage->load(key: new IdempotencyKey(value: 'bad-key'));
     }
@@ -459,9 +451,6 @@ final class SqliteIntegrationTest extends TestCase
         );
     }
 
-    /**
-     * @return array<string, mixed>|null
-     */
     private function fetchRow(string $key): ?array
     {
         $rows = $this->db->createCommand(sql: "
