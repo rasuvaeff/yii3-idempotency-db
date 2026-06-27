@@ -4,90 +4,83 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3IdempotencyDb\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\DataProvider;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3IdempotencyDb\Exception\InvalidRecordRowException;
 use Rasuvaeff\Yii3IdempotencyDb\RecordRowMapper;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(RecordRowMapper::class)]
-final class RecordRowMapperTest extends TestCase
+#[Test]
+#[Covers(RecordRowMapper::class)]
+final class RecordRowMapperTest
 {
     private RecordRowMapper $mapper;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->mapper = new RecordRowMapper();
     }
 
-    #[Test]
     public function mapsRowWithNativeTypes(): void
     {
         $record = $this->mapper->map($this->row());
 
-        $this->assertSame('order-123', $record->key->value);
-        $this->assertSame('abc123hash', $record->fingerprint->hash);
-        $this->assertSame(200, $record->response->statusCode);
-        $this->assertSame('{"status":"ok"}', $record->response->body);
-        $this->assertSame(['Content-Type' => ['application/json']], $record->response->headers);
-        $this->assertSame('2026-06-12 12:00:00', $record->expiresAt->format('Y-m-d H:i:s'));
+        Assert::same($record->key->value, 'order-123');
+        Assert::same($record->fingerprint->hash, 'abc123hash');
+        Assert::same($record->response->statusCode, 200);
+        Assert::same($record->response->body, '{"status":"ok"}');
+        Assert::same($record->response->headers, ['Content-Type' => ['application/json']]);
+        Assert::same($record->expiresAt->format('Y-m-d H:i:s'), '2026-06-12 12:00:00');
     }
 
-    #[Test]
     public function mapsRowWithJsonHeaders(): void
     {
         $row = $this->row(headers: '{"X-Custom":["val1","val2"]}');
 
         $record = $this->mapper->map($row);
 
-        $this->assertSame(['X-Custom' => ['val1', 'val2']], $record->response->headers);
+        Assert::same($record->response->headers, ['X-Custom' => ['val1', 'val2']]);
     }
 
-    #[Test]
     public function mapsRowWithEmptyStringHeaders(): void
     {
         $row = $this->row(headers: '');
 
         $record = $this->mapper->map($row);
 
-        $this->assertSame([], $record->response->headers);
+        Assert::same($record->response->headers, []);
     }
 
-    #[Test]
     public function mapsRowWithEmptyJsonObjectHeaders(): void
     {
         $row = $this->row(headers: '{}');
 
         $record = $this->mapper->map($row);
 
-        $this->assertSame([], $record->response->headers);
+        Assert::same($record->response->headers, []);
     }
 
-    #[Test]
     public function mapsRowWithNativeArrayHeaders(): void
     {
         $row = $this->row(headers: ['Content-Type' => ['text/html']]);
 
         $record = $this->mapper->map($row);
 
-        $this->assertSame(['Content-Type' => ['text/html']], $record->response->headers);
+        Assert::same($record->response->headers, ['Content-Type' => ['text/html']]);
     }
 
-    #[Test]
     public function mapsRowWithStatusCodeAsString(): void
     {
         $row = $this->row(statusCode: '201');
 
         $record = $this->mapper->map($row);
 
-        $this->assertSame(201, $record->response->statusCode);
+        Assert::same($record->response->statusCode, 201);
     }
 
-    /**
-     * @return iterable<string, array{0: array<string, mixed>, 1: string}>
-     */
     public static function invalidRowProvider(): iterable
     {
         $base = [
@@ -120,58 +113,53 @@ final class RecordRowMapperTest extends TestCase
         yield 'invalid expires_at' => [['expires_at' => 'not-a-date'] + $base, 'expires_at'];
     }
 
-    /**
-     * @param array<string, mixed> $row
-     */
     #[DataProvider('invalidRowProvider')]
-    #[Test]
     public function throwsOnInvalidRow(array $row, string $needle): void
     {
-        $this->expectException(InvalidRecordRowException::class);
-        $this->expectExceptionMessageMatches('/' . preg_quote($needle, '/') . '/');
-
-        $this->mapper->map($row);
+        try {
+            $this->mapper->map($row);
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::true(preg_match('/' . preg_quote($needle, '/') . '/', $e->getMessage()) === 1);
+        }
     }
 
-    #[Test]
     public function parsesExpiresAtAsUtc(): void
     {
         $record = $this->mapper->map($this->row(expiresAt: '2026-06-12 12:00:00'));
 
-        $this->assertSame('UTC', $record->expiresAt->getTimezone()->getName());
+        Assert::same($record->expiresAt->getTimezone()->getName(), 'UTC');
     }
 
-    #[Test]
     public function extractsExpiresAtFromRow(): void
     {
         $expiresAt = $this->mapper->expiresAt($this->row(expiresAt: '2026-06-12 12:00:00'));
 
-        $this->assertSame('2026-06-12 12:00:00', $expiresAt->format('Y-m-d H:i:s'));
+        Assert::same($expiresAt->format('Y-m-d H:i:s'), '2026-06-12 12:00:00');
     }
 
-    #[Test]
     public function expiresAtThrowsOnMissingColumn(): void
     {
-        $this->expectException(InvalidRecordRowException::class);
-        $this->expectExceptionMessageMatches('/expires_at/');
-
-        $this->mapper->expiresAt(['key' => 'order-123']);
+        try {
+            $this->mapper->expiresAt(['key' => 'order-123']);
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::true(preg_match('/expires_at/', $e->getMessage()) === 1);
+        }
     }
 
-    #[Test]
     public function throwsOnInvalidKeyValue(): void
     {
         $row = $this->row(key: '');
 
-        $this->expectException(InvalidRecordRowException::class);
-        $this->expectExceptionMessage('Invalid key in DB row');
-
-        $this->mapper->map($row);
+        try {
+            $this->mapper->map($row);
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::string($e->getMessage())->contains('Invalid key in DB row');
+        }
     }
 
-    /**
-     * @return array<string, mixed>
-     */
     private function row(
         string $key = 'order-123',
         string $fingerprint = 'abc123hash',
@@ -190,11 +178,6 @@ final class RecordRowMapperTest extends TestCase
         ];
     }
 
-    /**
-     * @param array<string, mixed> $row
-     *
-     * @return array<string, mixed>
-     */
     private static function without(array $row, string $column): array
     {
         unset($row[$column]);
