@@ -1,28 +1,37 @@
-# rasuvaeff/yii3-идемпотентность-дб
+# rasuvaeff/yii3-idempotency-db
+
 [![Stable Version](https://img.shields.io/packagist/v/rasuvaeff/yii3-idempotency-db.svg?label=stable)](https://packagist.org/packages/rasuvaeff/yii3-idempotency-db)
 [![Total Downloads](https://img.shields.io/packagist/dt/rasuvaeff/yii3-idempotency-db.svg)](https://packagist.org/packages/rasuvaeff/yii3-idempotency-db)
 [![Build](https://img.shields.io/github/actions/workflow/status/rasuvaeff/yii3-idempotency-db/build.yml?branch=master)](https://github.com/rasuvaeff/yii3-idempotency-db/actions)
 [![Static analysis](https://img.shields.io/github/actions/workflow/status/rasuvaeff/yii3-idempotency-db/static-analysis.yml?branch=master&label=psalm)](https://github.com/rasuvaeff/yii3-idempotency-db/actions)
 [![License](https://img.shields.io/packagist/l/rasuvaeff/yii3-idempotency-db.svg)](https://github.com/rasuvaeff/yii3-idempotency-db/blob/master/LICENSE.md)
-Хранилище идемпотентности на основе базы данных для API Yii3. Реализует
- `IdempotencyStorage` из `rasuvaeff/yii3-idempotency` с атомарным утверждением
- через `INSERT` (уникальный PK), воспроизведение ответа и срок действия на основе TTL.
+[English version](README.md)
 
- > Используете помощника по программированию с искусственным интеллектом? [llms.txt](llms.txt) содержит компактную ссылку на API
-, которую можно вставить в приглашение. @@ЛИНИЯ@@
+Database-backed хранилище идемпотентности для Yii3 API. Реализует
+`IdempotencyStorage` из `rasuvaeff/yii3-idempotency` с атомарным захватом
+через `INSERT` (уникальный PK), воспроизведением ответа и истечением по TTL.
+
+> Используете AI-ассистента? В [llms.txt](llms.txt) — компактный API-справочник,
+> который можно вставить в промпт.
+
 ## Требования
+
 - PHP 8.3+
- - `rasuvaeff/yii3-idempotency` ^1.0
- - `yiisoft/db` ^2.0
- - `yiisoft/db-migration` ^2.0
- - `psr/lock` ^1.0
+- `rasuvaeff/yii3-idempotency` ^1.0
+- `yiisoft/db` ^2.0
+- `yiisoft/db-migration` ^2.0
+- `psr/clock` ^1.0
 
 ## Установка
+
 ```bash
 composer require rasuvaeff/yii3-idempotency-db
 ```
+
 ## Использование
+
 ### Базовая настройка
+
 ```php
 use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
 use Rasuvaeff\Yii3Idempotency\HeaderIdempotencyKeyExtractor;
@@ -43,10 +52,13 @@ $middleware = new IdempotencyMiddleware(
     ttlSeconds: 3600,
 );
 ```
-### Запустить миграцию
+
+### Запуск миграции
+
 ```bash
 yii migrate/up
 ```
+
 Или используйте класс миграции напрямую:
 
 ```php
@@ -55,20 +67,24 @@ use M260611000000CreateIdempotencyKeysTable;
 $migration = new M260611000000CreateIdempotencyKeysTable(table: 'idempotency_keys');
 $migration->up($builder);
 ```
+
 ### Схема таблицы
+
 | Столбец | Тип | Описание |
- |---|---|---|
- | `ключ` | `ВАРЧАР(255)` ПК | Ключевое значение идемпотентности |
- | `отпечаток пальца` | `ВАРЧАР(64)` | SHA-256 хеш метода + путь + запрос + тело |
- | `код_статуса` | `СМАЛЛИНТ` | Код состояния ответа HTTP |
- | `заголовки` | `ТЕКСТ` | Заголовки ответов в формате JSON (`array<string, list<string>>`) |
- | `тело` | `ТЕКСТ` | Тело ответа |
- | `expires_at` | `ВАРЧАР(30)` | Временная метка истечения срока действия (UTC, `Y-m-d H:i:s`) |
- | `заявлен` | `БУЛЕВАЯ` | Затребован ли ключ (в процессе) | @@ЛИНИЯ@@
+|---|---|---|
+| `key` | `VARCHAR(255)` PK | Значение ключа идемпотентности |
+| `fingerprint` | `VARCHAR(64)` | SHA-256 хеш method + path + query + body |
+| `status_code` | `SMALLINT` | HTTP status code ответа |
+| `headers` | `TEXT` | JSON-закодированные заголовки ответа (`array<string, list<string>>`) |
+| `body` | `TEXT` | Тело ответа |
+| `expires_at` | `VARCHAR(30)` | Timestamp истечения (UTC, `Y-m-d H:i:s`) |
+| `claimed` | `BOOLEAN` | Захвачен ли ключ (идёт обработка) |
+
 ### Интеграция с Yii3
+
 Пакет предоставляет `config/di.php` и `config/params.php` для `yiisoft/config`.
 
- Параметры по умолчанию:
+Параметры по умолчанию:
 
 ```php
 // config/params.php
@@ -79,32 +95,43 @@ return [
     ],
 ];
 ```
-Проводка DI связывает IdempotencyStorage::class с DbIdempotencyStorage. @@ЛИНИЯ@@
+
+DI-конфигурация связывает `IdempotencyStorage::class` с `DbIdempotencyStorage`.
+
 ## Как это работает
-1. **Утверждение**: INSERT с уникальным ПК для ключа и expires_at = now +claimTtlSeconds.
- Если вставка успешна, ключ запрашивается атомарно. Дубликат ключа вызывает ошибку целостности БД
-, которую `claim()` преобразует в `false`; любая другая ошибка БД распространяется.
- 2. **Сохранить**: после завершения работы обработчика ответ вставляется в строку
-, а для параметра `claimed` устанавливается значение `0`; `expires_at` становится крайним сроком TTL записи.
- 3. **Загрузка**: при последующем запросе с тем же ключом `load()` считывает строку.
- Активная заявка (`claimed = 1`, крайний срок не достигнут) возвращает `null` без
- удаления строки — тогда промежуточное программное обеспечение не выполняет свою собственную `claim()` и отвечает 409.
- Устаревшая заявка (крайний срок истек — сбой процесса) удаляется и может быть повторно востребована.
- Завершенная запись восстанавливается с помощью `IdempotencyRecord::restore()` и проверяется
- на соответствие ее TTL; просроченные записи удаляются.
- 4. **Release**: если обработчик выдает (или возвращает 5xx), `release()` удаляет строку утверждения.
- 5. **Очистка**: `deleteExpired()` удаляет все строки после `expires_at` (использует индекс
- `idx_idempotency_expires_at`) — вызовите ее из задачи cron. @@ЛИНИЯ@@
+
+1. **Claim**: `INSERT` с уникальным PK по `key` и `expires_at = now + claimTtlSeconds`.
+   Если вставка успешна, ключ захватывается атомарно. Дубликат ключа вызывает
+   DB integrity error, который `claim()` преобразует в `false`; любая другая DB-ошибка
+   прокидывается дальше.
+2. **Store**: после завершения обработчика ответ upsert'ится в строку, а `claimed`
+   устанавливается в `0`; `expires_at` становится TTL-дедлайном записи.
+3. **Load**: при последующем запросе с тем же ключом `load()` читает строку.
+   Активный захват (`claimed = 1`, дедлайн не достигнут) возвращает `null` без
+   удаления строки — тогда middleware fails на собственном `claim()` и отвечает 409.
+   Stale-захват (дедлайн прошёл — упавший процесс) удаляется и может быть захвачен заново.
+   Завершённая запись восстанавливается через `IdempotencyRecord::restore()` и
+   проверяется на TTL; истёкшие записи удаляются.
+4. **Release**: если обработчик бросает исключение (или возвращает 5xx), `release()`
+   удаляет строку захвата.
+5. **Cleanup**: `deleteExpired()` удаляет все строки с прошедшим `expires_at` (использует
+   индекс `idx_idempotency_expires_at`) — вызывайте из cron-задачи.
+
 ## Безопасность
-- Ключи идемпотентности проверяются ядром («IdempotencyKey»).
- — Отпечатки пальцев представляют собой хэши SHA-256 — необработанный пользовательский ввод не сохраняется за пределами ключа.
- — тела ответов хранятся как есть; избегайте хранения конфиденциальных данных без шифрования
- на уровне приложений.
- — все временные метки хранятся в формате UTC — поведение хранения не зависит от часового пояса PHP
- по умолчанию. @@ЛИНИЯ@@
+
+- Ключи идемпотентности валидируются ядром (`IdempotencyKey`).
+- Fingerprint'ы — SHA-256 хеши; кроме ключа, сырой пользовательский ввод не хранится.
+- Тела ответов хранятся как есть; избегайте хранения чувствительных данных без
+  шифрования на уровне приложения.
+- Все timestamp'ы хранятся в UTC — поведение хранилища не зависит от часового пояса
+  PHP по умолчанию.
+
 ## Примеры
-См. [examples/](examples/) для работоспособных сценариев. @@ЛИНИЯ@@
+
+См. [examples/](examples/) — запускаемые скрипты.
+
 ## Разработка
+
 ```bash
 make install        # composer install
 make build          # full gate (validate + normalize + cs + psalm + test)
@@ -115,5 +142,7 @@ make test-coverage  # testo with coverage
 make mutation       # mutation testing
 make release-check  # build + rector + bc-check + mutation
 ```
+
 ## Лицензия
-BSD-3-пункт. См. [LICENSE.md](LICENSE.md).
+
+BSD-3-Clause. См. [LICENSE.md](LICENSE.md).
