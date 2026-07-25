@@ -18,6 +18,8 @@ use Yiisoft\Db\Query\Query;
  */
 final readonly class DbIdempotencyStorage implements IdempotencyStorage
 {
+    private string $table;
+
     private const int MIN_CLAIM_TTL_SECONDS = 1;
 
     private const string DATETIME_FORMAT = 'Y-m-d H:i:s';
@@ -30,12 +32,16 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
     public function __construct(
         private ConnectionInterface $db,
         private ClockInterface $clock,
-        private string $table = 'idempotency_keys',
+        string $table = 'idempotency_keys',
         private int $claimTtlSeconds = 3600,
     ) {
         if ($claimTtlSeconds < self::MIN_CLAIM_TTL_SECONDS) {
             throw new \InvalidArgumentException('Claim TTL seconds must be greater than 0');
         }
+
+        // validation lives in the value object, so the storage and the bundled
+        // migration cannot disagree about what a valid table name is
+        $this->table = (new IdempotencyKeysTableName($table))->value;
     }
 
     #[\Override]

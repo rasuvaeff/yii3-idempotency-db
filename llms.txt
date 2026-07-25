@@ -80,12 +80,20 @@ try {
 
 ### Migration
 
-```php
-use M260611000000CreateIdempotencyKeysTable;
+Class is namespaced since 2.0 — register with
+`MigrationService::setSourceNamespaces()` (`['Rasuvaeff\Yii3IdempotencyDb\Migration']`),
+never a `vendor/` path. The table name is `IdempotencyKeysTableName`, a value
+object built by `config/di.php` from `table_prefix` + `table` params and shared
+with `DbIdempotencyStorage`; configuring the migration through the container
+does NOT work (`Injector::make()` resolves by type, not by class-id) and fatals
+the container on every request.
 
-$migration = new M260611000000CreateIdempotencyKeysTable();
+```php
+use Rasuvaeff\Yii3IdempotencyDb\Migration\M260611000000CreateIdempotencyKeysTable;
+
+$migration = new M260611000000CreateIdempotencyKeysTable();  // default table
 // or with custom table name:
-$migration = new M260611000000CreateIdempotencyKeysTable(table: 'my_keys');
+$migration = new M260611000000CreateIdempotencyKeysTable(table: new IdempotencyKeysTableName('my_keys'));
 
 $migration->up($builder);
 $migration->down($builder);

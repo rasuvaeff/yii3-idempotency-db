@@ -52,6 +52,25 @@ make release-check
 
 ## Invariants & gotchas
 
+- **The table name is a VO, not a string, because `Injector` cannot resolve a
+  scalar.** `yiisoft/db-migration` builds migrations via `Injector::make()`,
+  which resolves arguments by name or by type and never reads a container
+  definition keyed by the migration's own class. That is why the 1.x recipe
+  `M...::class => ['__construct()' => ['table' => …]]` silently did nothing —
+  and why adding it made `Yiisoft\Di\Container` fatal at build time. Never
+  reintroduce a scalar `string $table` on a migration.
+- **One source of truth for the name.** `config/di.php` builds
+  `IdempotencyKeysTableName` from `table_prefix` + `table` params and passes it
+  to both the storage and the migration.
+- **The index name is derived from the table name.** In PostgreSQL index names
+  are unique per schema, not per table.
+- Migrations live in `src/Migration/` and are therefore covered by cs, psalm and
+  infection. `MigrationTableNameTest` asserts the column set and the index's
+  columns — without it those `ArrayItemRemoval` mutants escape.
+- `composer test` runs only the Unit suite; `composer mutation` runs every
+  suite. An integration test left pointing at `migrations/` passes the first and
+  fails the second.
+- Identifier patterns are anchored with `\z`, not `$`.
 - DB adapter is durable storage only — claim atomicity, response replay, TTL
   expiration, and conflict detection are guaranteed by the core middleware contract.
 - `claim()` uses `INSERT` with unique PK for atomicity. Returns `false` ONLY on

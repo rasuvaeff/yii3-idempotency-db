@@ -55,18 +55,50 @@ $middleware = new IdempotencyMiddleware(
 
 ### Запуск миграции
 
-```bash
-yii migrate/up
-```
-
-Или используйте класс миграции напрямую:
+Регистрируйте поставляемую миграцию **по namespace** — без путей в `vendor/`:
 
 ```php
-use M260611000000CreateIdempotencyKeysTable;
+// config/common/di/migration.php
+use Yiisoft\Db\Migration\Service\MigrationService;
 
-$migration = new M260611000000CreateIdempotencyKeysTable(table: 'idempotency_keys');
-$migration->up($builder);
+return [
+    MigrationService::class => [
+        'setSourceNamespaces()' => [[
+            'App\\Migration',
+            'Rasuvaeff\\Yii3IdempotencyDb\\Migration',
+        ]],
+    ],
+];
 ```
+
+```bash
+./yii migrate:up
+./yii migrate:down --limit=1
+```
+
+Имя таблицы задаётся в params — `config/di.php` превращает его в
+`IdempotencyKeysTableName`, который получают и миграция, и
+`DbIdempotencyStorage`:
+
+```php
+// config/common/params.php
+'rasuvaeff/yii3-idempotency-db' => [
+    'table' => 'my_idempotency_keys',
+    'table_prefix' => '',   // добавляется перед `table`; например 'rsv_' → rsv_my_idempotency_keys
+],
+```
+
+Имена индексов следуют за именем таблицы (idx_my_idempotency_keys_expires_at), поэтому две
+инсталляции могут делить одну схему PostgreSQL — там имена индексов уникальны
+в пределах схемы, а не таблицы.
+
+> **Не настраивайте миграцию через DI-контейнер.**
+> `M...::class => ['__construct()' => ['table' => ...]]` не работает: миграцию
+> создаёт `Injector::make()`, который резолвит аргументы по типу и никогда не
+> читает определение контейнера по имени класса самой миграции. Хуже того,
+> добавление такого определения роняет контейнер на этапе сборки в **каждом**
+> запросе, потому что класс не автозагружается, пока его не подключит раннер
+> миграций. Этот рецепт был описан в 1.x и никогда не работал.
 
 ### Схема таблицы
 

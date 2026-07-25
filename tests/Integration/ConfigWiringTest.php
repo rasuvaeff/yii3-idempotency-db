@@ -7,6 +7,7 @@ namespace Rasuvaeff\Yii3IdempotencyDb\Tests\Integration;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Idempotency\IdempotencyStorage;
 use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
+use Rasuvaeff\Yii3IdempotencyDb\IdempotencyKeysTableName;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Test;
@@ -26,9 +27,28 @@ use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 #[CoversNothing]
 final class ConfigWiringTest
 {
-    public function bindsOnlyTheStorageKey(): void
+    public function bindsOnlyItsOwnKeys(): void
     {
-        Assert::same(array_keys($this->loadDb([])), [IdempotencyStorage::class]);
+        // IdempotencyKeysTableName is this package's own type; the core binds
+        // neither it nor IdempotencyStorage, so there is nothing for
+        // yiisoft/config to call a duplicate
+        Assert::same(
+            array_keys($this->loadDb([])),
+            [IdempotencyKeysTableName::class, IdempotencyStorage::class],
+        );
+    }
+
+    public function tableNameFactoryAppliesThePrefix(): void
+    {
+        $definitions = $this->loadDb([
+            'rasuvaeff/yii3-idempotency-db' => ['table' => 'custom_keys', 'table_prefix' => 'rsv_'],
+        ]);
+        $factory = $definitions[IdempotencyKeysTableName::class];
+        Assert::true(is_callable($factory));
+
+        /** @var IdempotencyKeysTableName $table */
+        $table = $factory();
+        Assert::same($table->value, 'rsv_custom_keys');
     }
 
     public function storageFactoryBuildsDbStorage(): void
@@ -71,7 +91,10 @@ final class ConfigWiringTest
             }
         };
 
-        $storage = $factory($this->sqlite(), $clock);
+        $tableFactory = $definitions[IdempotencyKeysTableName::class];
+        Assert::true(is_callable($tableFactory));
+
+        $storage = $factory($this->sqlite(), $clock, $tableFactory());
         Assert::instanceOf($storage, IdempotencyStorage::class);
 
         return $storage;
