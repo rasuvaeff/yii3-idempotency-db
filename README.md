@@ -55,18 +55,50 @@ $middleware = new IdempotencyMiddleware(
 
 ### Run migration
 
-```bash
-yii migrate/up
-```
-
-Or use the migration class directly:
+Register the bundled migration **by namespace** — no vendor paths:
 
 ```php
-use M260611000000CreateIdempotencyKeysTable;
+// config/common/di/migration.php
+use Yiisoft\Db\Migration\Service\MigrationService;
 
-$migration = new M260611000000CreateIdempotencyKeysTable(table: 'idempotency_keys');
-$migration->up($builder);
+return [
+    MigrationService::class => [
+        'setSourceNamespaces()' => [[
+            'App\\Migration',
+            'Rasuvaeff\\Yii3IdempotencyDb\\Migration',
+        ]],
+    ],
+];
 ```
+
+```bash
+./yii migrate:up
+./yii migrate:down --limit=1
+```
+
+Set the table name in params — `config/di.php` turns it into an
+`IdempotencyKeysTableName` that reaches the migration **and**
+`DbIdempotencyStorage`:
+
+```php
+// config/common/params.php
+'rasuvaeff/yii3-idempotency-db' => [
+    'table' => 'my_idempotency_keys',
+    'table_prefix' => '',   // prepended to `table`; e.g. 'rsv_' → rsv_my_idempotency_keys
+],
+```
+
+Index names follow the table name (idx_my_idempotency_keys_expires_at), so two installations can
+share one PostgreSQL schema — index names are unique per schema there, not per
+table.
+
+> **Do not configure the migration through the DI container.**
+> `M...::class => ['__construct()' => ['table' => ...]]` does not work: the
+> migration is built by `Injector::make()`, which resolves arguments by type
+> and never reads a container definition keyed by the migration's own class.
+> Worse, adding that definition makes the container fatal at build time in
+> **every** request, because the class is not autoloadable until the migration
+> runner requires it. That recipe was documented in 1.x; it never worked.
 
 ### Table schema
 

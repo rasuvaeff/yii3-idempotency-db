@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+namespace Rasuvaeff\Yii3IdempotencyDb\Migration;
+
+use Rasuvaeff\Yii3IdempotencyDb\IdempotencyKeysTableName;
 use Yiisoft\Db\Migration\MigrationBuilder;
 use Yiisoft\Db\Migration\RevertibleMigrationInterface;
 use Yiisoft\Db\Migration\TransactionalMigrationInterface;
@@ -9,30 +12,29 @@ use Yiisoft\Db\Migration\TransactionalMigrationInterface;
 /**
  * Creates the idempotency-keys table used by {@see \Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage}.
  *
- * The table name defaults to `idempotency_keys` and must match the `table` argument
- * of {@see \Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage}. To use a custom name,
- * bind the constructor argument in your DI configuration:
+ * The table name comes from {@see IdempotencyKeysTableName}, which `config/di.php`
+ * builds from params — one source of truth for the migration and the
+ * runtime code alike. Register the migration by namespace:
  *
  * ```php
- * M260611000000CreateIdempotencyKeysTable::class => [
- *     '__construct()' => ['table' => 'my_idempotency_keys'],
+ * MigrationService::class => [
+ *     'setSourceNamespaces()' => [['Rasuvaeff\\Yii3IdempotencyDb\\Migration']],
  * ],
  * ```
+ *
+ * @api
  */
 final class M260611000000CreateIdempotencyKeysTable implements RevertibleMigrationInterface, TransactionalMigrationInterface
 {
-    /**
-     * @param non-empty-string $table
-     */
     public function __construct(
-        private readonly string $table = 'idempotency_keys',
+        private readonly IdempotencyKeysTableName $table = new IdempotencyKeysTableName(),
     ) {}
 
     #[\Override]
     public function up(MigrationBuilder $b): void
     {
         $b->createTable(
-            $this->table,
+            $this->table->value,
             [
                 'key' => 'string(255) NOT NULL PRIMARY KEY',
                 'fingerprint' => 'string(64) NOT NULL',
@@ -44,12 +46,19 @@ final class M260611000000CreateIdempotencyKeysTable implements RevertibleMigrati
             ],
         );
 
-        $b->createIndex($this->table, 'idx_idempotency_expires_at', 'expires_at');
+        // index names follow the table name: in PostgreSQL they are unique per
+        // schema, so two installations sharing one schema would collide on a
+        // hard-coded name
+        $b->createIndex(
+            $this->table->value,
+            sprintf('idx_%s_expires_at', $this->table->forIndexName()),
+            'expires_at',
+        );
     }
 
     #[\Override]
     public function down(MigrationBuilder $b): void
     {
-        $b->dropTable($this->table);
+        $b->dropTable($this->table->value);
     }
 }

@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3IdempotencyDb\Tests\Integration;
 
-use M260611000000CreateIdempotencyKeysTable;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Idempotency\IdempotencyFingerprint;
 use Rasuvaeff\Yii3Idempotency\IdempotencyKey;
 use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
+use Rasuvaeff\Yii3IdempotencyDb\IdempotencyKeysTableName;
+use Rasuvaeff\Yii3IdempotencyDb\Migration\M260611000000CreateIdempotencyKeysTable;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Lifecycle\AfterTest;
@@ -33,8 +34,6 @@ final class MigrationTest
     #[BeforeTest]
     public function setUp(): void
     {
-        require_once dirname(__DIR__, 2) . '/migrations/M260611000000CreateIdempotencyKeysTable.php';
-
         $driver = new SqliteDriver(dsn: 'sqlite::memory:');
         $schemaCache = new SchemaCache(psrCache: new MemorySimpleCache());
         $this->db = new SqliteConnection(driver: $driver, schemaCache: $schemaCache);
@@ -73,7 +72,7 @@ final class MigrationTest
 
     public function createsTableWithCustomName(): void
     {
-        (new M260611000000CreateIdempotencyKeysTable(table: 'custom_keys'))->up($this->builder);
+        (new M260611000000CreateIdempotencyKeysTable(table: new IdempotencyKeysTableName('custom_keys')))->up($this->builder);
 
         Assert::notNull($this->db->getTableSchema('custom_keys', true));
         Assert::null($this->db->getTableSchema('idempotency_keys', true));
