@@ -14,6 +14,7 @@ use Testo\Test;
 
 #[Test]
 #[Covers(RecordRowMapper::class)]
+#[Covers(InvalidRecordRowException::class)]
 final class RecordRowMapperTest
 {
     private RecordRowMapper $mapper;
@@ -79,6 +80,70 @@ final class RecordRowMapperTest
         $record = $this->mapper->map($row);
 
         Assert::same($record->response->statusCode, 201);
+    }
+
+    public function mapsRowWithMultipleHeaderNames(): void
+    {
+        $row = $this->row(headers: [
+            'Content-Type' => ['application/json'],
+            'X-Request-Id' => ['req-1'],
+        ]);
+
+        $record = $this->mapper->map($row);
+
+        Assert::same($record->response->headers, [
+            'Content-Type' => ['application/json'],
+            'X-Request-Id' => ['req-1'],
+        ]);
+    }
+
+    public function throwsExactMessageOnMissingHeadersColumn(): void
+    {
+        $row = self::without($this->row(), 'headers');
+
+        try {
+            $this->mapper->map($row);
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::same($e->getMessage(), 'Missing column "headers" in idempotency record row');
+        }
+    }
+
+    public function throwsExactMessageOnMissingStatusCode(): void
+    {
+        // Pins that the isset guard and the format-mismatch fallback in
+        // extractInt() deliberately share this exact wording — see
+        // infection.json5 (RecordRowMapper.php:188 equivalent mutant note).
+        $row = self::without($this->row(), 'status_code');
+
+        try {
+            $this->mapper->map($row);
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::same($e->getMessage(), 'Missing or invalid column "status_code" in idempotency record row');
+        }
+    }
+
+    public function throwsExactMessageOnMalformedHeadersJson(): void
+    {
+        $row = $this->row(headers: 'not-json');
+
+        $jsonMessage = null;
+
+        try {
+            json_decode(json: 'not-json', associative: true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException $jsonException) {
+            $jsonMessage = $jsonException->getMessage();
+        }
+
+        Assert::notNull($jsonMessage);
+
+        try {
+            $this->mapper->map($row);
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::same($e->getMessage(), sprintf('Invalid "headers" JSON: %s', $jsonMessage));
+        }
     }
 
     public static function invalidRowProvider(): iterable
