@@ -13,6 +13,7 @@ use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
 use Rasuvaeff\Yii3IdempotencyDb\Exception\InvalidRecordRowException;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -25,6 +26,7 @@ use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 
 #[Test]
 #[Covers(DbIdempotencyStorage::class)]
+#[Covers(InvalidRecordRowException::class)]
 final class SqliteIntegrationTest
 {
     private ConnectionInterface $db;
@@ -143,6 +145,37 @@ final class SqliteIntegrationTest
         Assert::same((int) $row['claimed'], 0);
     }
 
+    public function loadFiltersByKeyAmongMultipleRecords(): void
+    {
+        $storage = $this->createStorage();
+
+        $keyA = new IdempotencyKey(value: 'multi-a');
+        $fingerprintA = new IdempotencyFingerprint(hash: 'fp-a');
+        $storage->claim(key: $keyA, fingerprint: $fingerprintA);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $keyA,
+            fingerprint: $fingerprintA,
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'body-a'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $keyB = new IdempotencyKey(value: 'multi-b');
+        $fingerprintB = new IdempotencyFingerprint(hash: 'fp-b');
+        $storage->claim(key: $keyB, fingerprint: $fingerprintB);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $keyB,
+            fingerprint: $fingerprintB,
+            response: new IdempotencyResponse(statusCode: 201, headers: [], body: 'body-b'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $loaded = $storage->load(key: $keyB);
+
+        Assert::notNull($loaded);
+        Assert::same($loaded->key->value, 'multi-b');
+        Assert::same($loaded->response->body, 'body-b');
+    }
+
     public function loadReturnsStoredRecord(): void
     {
         $storage = $this->createStorage();
@@ -202,6 +235,7 @@ final class SqliteIntegrationTest
         $loaded = $storage->load(key: $key);
 
         Assert::null($loaded);
+        Assert::null($this->fetchRow('expired-key'));
     }
 
     public function releaseDeletesRecord(): void
@@ -216,6 +250,22 @@ final class SqliteIntegrationTest
 
         $row = $this->fetchRow('to-release');
         Assert::null($row);
+    }
+
+    public function releaseDeletesOnlyMatchingKey(): void
+    {
+        $storage = $this->createStorage();
+
+        $keyA = new IdempotencyKey(value: 'release-a');
+        $storage->claim(key: $keyA, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        $keyB = new IdempotencyKey(value: 'release-b');
+        $storage->claim(key: $keyB, fingerprint: new IdempotencyFingerprint(hash: 'h2'));
+
+        $storage->release(key: $keyA);
+
+        Assert::null($this->fetchRow('release-a'));
+        Assert::notNull($this->fetchRow('release-b'));
     }
 
     public function releaseIsNoopForMissingKey(): void
@@ -440,6 +490,34 @@ final class SqliteIntegrationTest
         Expect::exception(InvalidRecordRowException::class);
 
         $storage->load(key: new IdempotencyKey(value: 'bad-key'));
+    }
+
+    #[DataProvider('stringClaimedFlagProvider')]
+    public function loadTreatsStringClaimedFlagAsActive(string $claimedValue): void
+    {
+        $this->db->createCommand(sql: '
+            INSERT INTO idempotency_keys ("key", fingerprint, status_code, headers, body, expires_at, claimed)
+            VALUES (:key, :fingerprint, :status_code, :headers, :body, :expires_at, :claimed)
+        ')->bindValues([
+            ':key' => 'str-claimed',
+            ':fingerprint' => 'hash',
+            ':status_code' => 200,
+            ':headers' => '{}',
+            ':body' => 'body',
+            ':expires_at' => $this->now->modify('+3600 seconds')->format('Y-m-d H:i:s'),
+            ':claimed' => $claimedValue,
+        ])->execute();
+
+        $storage = $this->createStorage();
+
+        Assert::null($storage->load(key: new IdempotencyKey(value: 'str-claimed')));
+        Assert::notNull($this->fetchRow('str-claimed'));
+    }
+
+    public static function stringClaimedFlagProvider(): iterable
+    {
+        yield 't' => ['t'];
+        yield 'true' => ['true'];
     }
 
     private function createStorage(int $claimTtlSeconds = 3600): DbIdempotencyStorage
