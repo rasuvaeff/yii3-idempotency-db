@@ -8,7 +8,7 @@ Database-backed idempotency storage for Yii3 APIs. Implements
 `IdempotencyStorage` from `rasuvaeff/yii3-idempotency` core. Stores idempotency
 records in a database table with atomic claim via `INSERT` (unique PK on `key`),
 response replay through row mapping, and TTL-based expiration checked on `load()`.
-A migration for `yiisoft/db-migration` ships in `migrations/`.
+A migration for `yiisoft/db-migration` ships in `src/Migration/`.
 
 Namespace: `Rasuvaeff\Yii3IdempotencyDb`.
 Public API: `DbIdempotencyStorage`, `Exception\InvalidRecordRowException`.
@@ -88,8 +88,13 @@ make release-check
 - `deleteExpired()` is the bulk GC entry point (uses the `expires_at` index).
 - `release()` deletes the row (used on handler error to unclaim).
 - Row → `IdempotencyRecord` mapping lives in `RecordRowMapper` (pure, unit-tested).
-- Migrations are loaded by `yiisoft/db-migration` via `sourcePaths` (global-namespace
-  classes in `migrations/`); the migration table name is a constructor argument.
+- The migration table name is a constructor argument. `setSourceNamespaces()`
+  does NOT find them on any released `yiisoft/db-migration` (≤ 2.0.1): it
+  matches the PSR-4 map by string prefix, so `Rasuvaeff\Yii3IdempotencyDb\Migration`
+  resolves into the core package and discovery silently finds zero —
+  `migrate:up` exits 0 having created nothing. Until an upstream release carries
+  the fix, migrations are applied directly via
+  `Injector::make($class)->up($builder)` — see the README.
 - Invalid row / missing column / bad JSON headers → `InvalidRecordRowException`.
 - Empty table or missing key → `null` (no exception).
 - `key` is a SQL reserved word — always quoted in raw SQL.
