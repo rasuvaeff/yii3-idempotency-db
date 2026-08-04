@@ -88,13 +88,9 @@ make release-check
 - `deleteExpired()` is the bulk GC entry point (uses the `expires_at` index).
 - `release()` deletes the row (used on handler error to unclaim).
 - Row → `IdempotencyRecord` mapping lives in `RecordRowMapper` (pure, unit-tested).
-- The migration table name is a constructor argument. `setSourceNamespaces()`
-  does NOT find them on any released `yiisoft/db-migration` (≤ 2.0.1): it
-  matches the PSR-4 map by string prefix, so `Rasuvaeff\Yii3IdempotencyDb\Migration`
-  resolves into the core package and discovery silently finds zero —
-  `migrate:up` exits 0 having created nothing. Until an upstream release carries
-  the fix, migrations are applied directly via
-  `Injector::make($class)->up($builder)` — see the README.
+- The migration table name is a constructor argument, resolved by
+  `Injector::make()` the same way as the storage. `setSourceNamespaces()`
+  registration works as of `yiisoft/db-migration` ^2.1 — see the README.
 - Invalid row / missing column / bad JSON headers → `InvalidRecordRowException`.
 - Empty table or missing key → `null` (no exception).
 - `key` is a SQL reserved word — always quoted in raw SQL.
