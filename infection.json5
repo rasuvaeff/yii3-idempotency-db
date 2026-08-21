@@ -27,7 +27,7 @@
     //   that differs. Killing it needs a src-side message split between the
     //   two guards, which is a behavior change out of scope for coverage-
     //   honesty work.
-    "minMsi": 85,
+    "minMsi": 97,
     "mutators": {
         "@default": true
     }
