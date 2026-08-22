@@ -117,6 +117,9 @@ final class ConfigWiringTest
 
     private function loadCore(): array
     {
+        // yiisoft/config defines this variable before loading vendor DI files.
+        $params = [];
+
         return require dirname(__DIR__, 2) . '/vendor/rasuvaeff/yii3-idempotency/config/di.php';
     }
 

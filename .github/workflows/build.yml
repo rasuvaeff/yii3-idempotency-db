@@ -178,19 +178,8 @@ jobs:
       - name: Test with coverage
         run: composer test:coverage:ci
 
-      - name: Debug initial test run
-        run: |
-          php -v
-          php -m | grep -i pcov
-          vendor/bin/testo --version
-          vendor/bin/testo run --type=!bench --teamcity --coverage --coverage-xml=/tmp/coverage.xml --log-junit=/tmp/junit.xml > /tmp/initial-run.log 2>&1
-          code=$?
-          tail -40 /tmp/initial-run.log
-          echo "EXIT=$code"
-          exit $code
-
       - name: Mutation testing
-        run: composer mutation -- -vvv --debug
+        run: composer mutation
 
   compatibility:
     name: Backward compatibility
