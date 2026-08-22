@@ -42,6 +42,7 @@ $storage = new DbIdempotencyStorage(
     clock: $clock,             // PSR-20 ClockInterface
     table: 'idempotency_keys',
     claimTtlSeconds: 3600,     // deadline for in-flight claims (stale-claim recovery)
+    gcDivisor: 1000,           // ~1 успешный claim из 1000 попутно чистит истёкшие строки; 0 — выключить
 );
 
 $middleware = new IdempotencyMiddleware(
@@ -75,6 +76,14 @@ return [
 ./yii migrate:up
 ./yii migrate:down --limit=1
 ```
+
+Пакет содержит две миграции, и **обе обязательны**:
+`M260611000000CreateIdempotencyKeysTable` создаёт таблицу, а
+`M260822000000AddBodyEncodingColumn` добавляет колонку `body_encoding`, которую
+пишет каждый claim. Установка, созданная до появления этой колонки, обязана
+выполнить `migrate:up` до деплоя этой версии — см. [UPGRADE.md](UPGRADE.md).
+Откат второй миграции требует драйвера с поддержкой `DROP COLUMN`, которой в
+`yiisoft/db-sqlite` нет.
 
 `yiisoft/db-migration` строит миграцию через `Injector::make()`, поэтому она
 получает value object имени таблицы из контейнера так же, как и хранилище —
@@ -112,9 +121,14 @@ return [
 | `fingerprint` | `VARCHAR(64)` | SHA-256 хеш method + path + query + body |
 | `status_code` | `SMALLINT` | HTTP status code ответа |
 | `headers` | `TEXT` | JSON-закодированные заголовки ответа (`array<string, list<string>>`) |
-| `body` | `TEXT` | Тело ответа |
+| `body` | `TEXT` | Тело ответа (base64, если так говорит `body_encoding`) |
+| `body_encoding` | `VARCHAR(16)` | `plain` или `base64` — как хранится `body` |
 | `expires_at` | `VARCHAR(30)` | Timestamp истечения (UTC, `Y-m-d H:i:s`) |
 | `claimed` | `BOOLEAN` | Захвачен ли ключ (идёт обработка) |
+
+У `headers` и `body` намеренно нет DEFAULT: MySQL запрещает литеральный DEFAULT
+у TEXT-колонки (ошибка 1101), а нужды в нём нет — каждый INSERT этого пакета
+пишет обе колонки явно.
 
 ### Интеграция с Yii3
 
@@ -128,6 +142,7 @@ return [
     'rasuvaeff/yii3-idempotency-db' => [
         'table' => 'idempotency_keys',
         'claimTtlSeconds' => 3600,
+        'gcDivisor' => 1000,
     ],
 ];
 ```
@@ -149,9 +164,21 @@ DI-конфигурация связывает `IdempotencyStorage::class` с `D
    Завершённая запись восстанавливается через `IdempotencyRecord::restore()` и
    проверяется на TTL; истёкшие записи удаляются.
 4. **Release**: если обработчик бросает исключение (или возвращает 5xx), `release()`
-   удаляет строку захвата.
+   удаляет строку захвата — но только тот захват, который взял этот экземпляр
+   хранилища. Записанный им `expires_at` работает токеном владения: перехват
+   после протухания захвата обязательно пишет более поздний дедлайн, поэтому
+   запоздалый release от прежнего владельца не находит строки и не может удалить
+   ни захват конкурента, ни уже сохранённый им ответ.
 5. **Cleanup**: `deleteExpired()` удаляет все строки с прошедшим `expires_at` (использует
-   индекс `idx_idempotency_expires_at`) — вызывайте из cron-задачи.
+   индекс `idx_idempotency_expires_at`). Примерно один успешный claim из
+   `gcDivisor` вызывает его попутно, так что таблица не растёт без cron-задачи;
+   `gcDivisor: 0` выключает это, и уборка остаётся на вас.
+
+Все удаления, кроме `deleteExpired()`, условны: строка удаляется, только пока
+это та самая строка, которую прочитал вызывающий, — с тем же флагом `claimed` и
+`expires_at` в прошлом. Безусловный `DELETE WHERE key = :k` не отличает её от
+свежей строки, которую конкурент создал в промежутке, поэтому на границе TTL два
+запроса могли удалить захваты друг друга и оба выполнить handler.
 
 ## Безопасность
 
@@ -159,6 +186,10 @@ DI-конфигурация связывает `IdempotencyStorage::class` с `D
 - Fingerprint'ы — SHA-256 хеши; кроме ключа, сырой пользовательский ввод не хранится.
 - Тела ответов хранятся как есть; избегайте хранения чувствительных данных без
   шифрования на уровне приложения.
+- Тело, не являющееся валидным UTF-8 (PDF, ZIP, что угодно с NUL-байтом),
+  кодируется в base64 при записи и декодируется при чтении. Колонка `text` такие
+  байты хранить не может — PostgreSQL их отвергает, — а падение на этом шаге
+  завалило бы запрос, side effects которого уже зафиксированы.
 - Все timestamp'ы хранятся в UTC — поведение хранилища не зависит от часового пояса
   PHP по умолчанию.
 

@@ -39,8 +39,11 @@ final class M260611000000CreateIdempotencyKeysTable implements RevertibleMigrati
                 'key' => 'string(255) NOT NULL PRIMARY KEY',
                 'fingerprint' => 'string(64) NOT NULL',
                 'status_code' => 'smallint NOT NULL DEFAULT 0',
-                'headers' => "text NOT NULL DEFAULT '{}'",
-                'body' => "text NOT NULL DEFAULT ''",
+                // no literal DEFAULT: MySQL rejects one on a TEXT/BLOB column
+                // outright (error 1101), and nothing needs it — every INSERT
+                // this package issues writes both columns explicitly
+                'headers' => 'text NOT NULL',
+                'body' => 'text NOT NULL',
                 'expires_at' => 'string(30) NOT NULL',
                 'claimed' => 'boolean NOT NULL DEFAULT FALSE',
             ],

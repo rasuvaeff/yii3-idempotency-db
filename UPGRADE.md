@@ -1,5 +1,23 @@
 # Upgrade guide
 
+## → unreleased (the `body_encoding` column)
+
+`DbIdempotencyStorage::claim()` writes a `body_encoding` column on every claim,
+so the bundled `M260822000000AddBodyEncodingColumn` migration must be applied
+**before** this version serves a request:
+
+```bash
+./yii migrate:up
+```
+
+Nothing else is needed — the column defaults to `plain`, which is what every row
+written by an earlier version holds. If your deployment applies migrations by
+namespace (`setSourceNamespaces()`, the documented registration), the new
+migration is picked up with no configuration change.
+
+Reverting it requires a driver that implements `DROP COLUMN`; `yiisoft/db-sqlite`
+does not, and raises `NotSupportedException` on `migrate:down`.
+
 ## 1.x → 2.0
 
 The bundled migration moved into the package namespace:

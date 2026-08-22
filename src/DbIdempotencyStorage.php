@@ -20,7 +20,19 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
 {
     private string $table;
 
+    private ClaimDeadlines $claimDeadlines;
+
     private const int MIN_CLAIM_TTL_SECONDS = 1;
+
+    private const int DEFAULT_GC_DIVISOR = 1000;
+
+    private const int GC_DISABLED = 0;
+
+    /**
+     * The single draw that triggers a sweep. A constant rather than a literal so
+     * the lower bound and the comparison can never drift apart.
+     */
+    private const int GC_HIT = 1;
 
     private const string DATETIME_FORMAT = 'Y-m-d H:i:s';
 
@@ -28,20 +40,30 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
      * @param non-empty-string $table
      * @param int $claimTtlSeconds Deadline for an in-flight claim: a claimed row older
      * than this is treated as stale (crashed process) and may be re-claimed.
+     * @param int $gcDivisor Roughly one successful claim in `gcDivisor` also sweeps expired
+     * rows. Nothing else ever removes them — an idempotency key is single-use, so the lazy
+     * cleanup on `load()` practically never fires. `0` turns the sweep off for deployments
+     * that call {@see self::deleteExpired()} from their own cron job instead.
      */
     public function __construct(
         private ConnectionInterface $db,
         private ClockInterface $clock,
         string $table = 'idempotency_keys',
         private int $claimTtlSeconds = 3600,
+        private int $gcDivisor = self::DEFAULT_GC_DIVISOR,
     ) {
         if ($claimTtlSeconds < self::MIN_CLAIM_TTL_SECONDS) {
             throw new \InvalidArgumentException('Claim TTL seconds must be greater than 0');
         }
 
+        if ($gcDivisor < self::GC_DISABLED) {
+            throw new \InvalidArgumentException('GC divisor must not be negative');
+        }
+
         // validation lives in the value object, so the storage and the bundled
         // migration cannot disagree about what a valid table name is
         $this->table = (new IdempotencyKeysTableName($table))->value;
+        $this->claimDeadlines = new ClaimDeadlines();
     }
 
     #[\Override]
@@ -61,7 +83,7 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
 
         if ($this->isClaimedRow(row: $row)) {
             if ($this->clock->now() >= $mapper->expiresAt(row: $row)) {
-                $this->deleteByKey(key: $key);
+                $this->deleteExpiredRow(key: $key, claimed: true);
             }
 
             return null;
@@ -70,7 +92,7 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
         $record = $mapper->map(row: $row);
 
         if ($record->isExpired($this->clock)) {
-            $this->deleteByKey(key: $key);
+            $this->deleteExpiredRow(key: $key, claimed: false);
 
             return null;
         }
@@ -81,7 +103,7 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
     #[\Override]
     public function claim(IdempotencyKey $key, IdempotencyFingerprint $fingerprint): bool
     {
-        $deadline = $this->clock->now()->modify("+{$this->claimTtlSeconds} seconds");
+        $deadline = $this->formatDateTime($this->clock->now()->modify("+{$this->claimTtlSeconds} seconds"));
 
         try {
             $affected = $this->db->createCommand()->insert(
@@ -92,21 +114,30 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
                     'status_code' => 0,
                     'headers' => '{}',
                     'body' => '',
-                    'expires_at' => $this->formatDateTime($deadline),
+                    'body_encoding' => RecordRowMapper::ENCODING_PLAIN,
+                    'expires_at' => $deadline,
                     'claimed' => 1,
                 ],
             )->execute();
-
-            return $affected > 0;
         } catch (IntegrityException) {
             return false;
         }
+
+        if ($affected <= 0) {
+            return false;
+        }
+
+        $this->claimDeadlines->remember($key->value, $deadline);
+        $this->collectGarbage();
+
+        return true;
     }
 
     #[\Override]
     public function store(IdempotencyRecord $record): void
     {
         $headers = json_encode(value: $record->response->headers, flags: JSON_THROW_ON_ERROR);
+        [$body, $encoding] = $this->encodeBody($record->response->body);
 
         $this->db->createCommand()->upsert(
             table: $this->table,
@@ -115,17 +146,41 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
                 'fingerprint' => $record->fingerprint->hash,
                 'status_code' => $record->response->statusCode,
                 'headers' => $headers,
-                'body' => $record->response->body,
+                'body' => $body,
+                'body_encoding' => $encoding,
                 'expires_at' => $this->formatDateTime($record->expiresAt),
                 'claimed' => 0,
             ],
         )->execute();
+
+        // The claim is finished, so its ownership token is spent.
+        $this->claimDeadlines->forget($record->key->value);
     }
 
     #[\Override]
     public function release(IdempotencyKey $key): void
     {
-        $this->deleteByKey(key: $key);
+        $deadline = $this->claimDeadlines->forget($key->value);
+
+        // Only this instance's own claim, and only while it is still that claim.
+        // `expires_at` is the ownership token: a takeover happens only after the
+        // original deadline has passed and `claimTtlSeconds` is at least one
+        // second, so the new owner necessarily wrote a later deadline and a late
+        // release from the previous owner matches nothing. A release for a claim
+        // this instance never took owns nothing to release, so it deletes
+        // nothing — deleting whatever claim happens to sit under the key is how
+        // a competitor's fresh claim used to disappear.
+        if ($deadline !== null) {
+            $this->db->createCommand()->delete(
+                table: $this->table,
+                condition: [
+                    'and',
+                    ['key' => $key->value],
+                    ['claimed' => true],
+                    ['expires_at' => $deadline],
+                ],
+            )->execute();
+        }
     }
 
     public function deleteExpired(): int
@@ -136,12 +191,55 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
         )->execute();
     }
 
-    private function deleteByKey(IdempotencyKey $key): void
+    /**
+     * Deletes a row only while it is still the one the caller judged expired.
+     *
+     * An unconditional `DELETE ... WHERE key = :k` cannot tell a row it just read
+     * as expired from a fresh one a competitor created in between, so at the TTL
+     * boundary two requests could each delete the other's claim and both run the
+     * handler — the very duplication this package prevents.
+     */
+    private function deleteExpiredRow(IdempotencyKey $key, bool $claimed): void
     {
         $this->db->createCommand()->delete(
             table: $this->table,
-            condition: ['key' => $key->value],
+            condition: [
+                'and',
+                ['key' => $key->value],
+                ['claimed' => $claimed],
+                ['<=', 'expires_at', $this->formatDateTime($this->clock->now())],
+            ],
         )->execute();
+    }
+
+    private function collectGarbage(): void
+    {
+        if ($this->gcDivisor === self::GC_DISABLED) {
+            return;
+        }
+
+        if (random_int(self::GC_HIT, $this->gcDivisor) !== self::GC_HIT) {
+            return;
+        }
+
+        $this->deleteExpired();
+    }
+
+    /**
+     * A `text` column cannot hold what is not valid UTF-8: PostgreSQL rejects an
+     * invalid byte sequence and the NUL byte outright. Failing here would fail a
+     * request whose side effects are already committed, so a binary body is
+     * base64-encoded and the row records that.
+     *
+     * @return array{string, string}
+     */
+    private function encodeBody(string $body): array
+    {
+        if (preg_match('//u', $body) === 1 && !str_contains($body, "\0")) {
+            return [$body, RecordRowMapper::ENCODING_PLAIN];
+        }
+
+        return [base64_encode($body), RecordRowMapper::ENCODING_BASE64];
     }
 
     /**

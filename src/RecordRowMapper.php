@@ -16,6 +16,18 @@ use Rasuvaeff\Yii3IdempotencyDb\Exception\InvalidRecordRowException;
 final readonly class RecordRowMapper
 {
     /**
+     * The body is stored as it came: it is valid UTF-8 without NUL bytes, which
+     * is all a `text` column can hold.
+     */
+    public const string ENCODING_PLAIN = 'plain';
+
+    /**
+     * The body was base64-encoded before it was written, because the raw bytes
+     * would have been rejected by the column.
+     */
+    public const string ENCODING_BASE64 = 'base64';
+
+    /**
      * @param array<array-key, mixed> $row
      */
     public function expiresAt(array $row): \DateTimeImmutable
@@ -33,7 +45,7 @@ final readonly class RecordRowMapper
         $keyValue = $this->extractString(row: $row, column: 'key');
         $fingerprintHash = $this->extractString(row: $row, column: 'fingerprint');
         $statusCode = $this->extractInt(row: $row, column: 'status_code');
-        $body = $this->extractString(row: $row, column: 'body');
+        $body = $this->decodeBody(row: $row);
         $expiresAt = $this->extractString(row: $row, column: 'expires_at');
 
         try {
@@ -59,6 +71,41 @@ final readonly class RecordRowMapper
             ),
             expiresAt: $expiresAtDate,
         );
+    }
+
+    /**
+     * A row written before the `body_encoding` column existed has no such key;
+     * such a body was stored verbatim, so the missing column reads as plain.
+     *
+     * @param array<array-key, mixed> $row
+     */
+    private function decodeBody(array $row): string
+    {
+        $body = $this->extractString(row: $row, column: 'body');
+        $encoding = $row['body_encoding'] ?? self::ENCODING_PLAIN;
+
+        if ($encoding === self::ENCODING_PLAIN) {
+            return $body;
+        }
+
+        if ($encoding !== self::ENCODING_BASE64) {
+            throw new InvalidRecordRowException(
+                message: sprintf(
+                    'Unknown "body_encoding" in idempotency record row: %s',
+                    var_export($encoding, return: true),
+                ),
+            );
+        }
+
+        $decoded = base64_decode($body, strict: true);
+
+        if ($decoded === false) {
+            throw new InvalidRecordRowException(
+                message: 'Invalid base64 in column "body" of idempotency record row',
+            );
+        }
+
+        return $decoded;
     }
 
     /**

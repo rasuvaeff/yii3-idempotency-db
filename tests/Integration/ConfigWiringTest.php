@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
 use Rasuvaeff\Yii3IdempotencyDb\IdempotencyKeysTableName;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
+use Testo\Expect;
 use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
@@ -63,6 +64,15 @@ final class ConfigWiringTest
     public function storageFactoryUsesDefaultsWhenParamsAbsent(): void
     {
         Assert::instanceOf($this->resolveStorage([]), DbIdempotencyStorage::class);
+    }
+
+    public function storageFactoryPassesTheGcDivisorThrough(): void
+    {
+        // the constructor rejects a negative divisor, so the throw proves the
+        // param reached it instead of being silently dropped
+        Expect::exception(\InvalidArgumentException::class);
+
+        $this->resolveStorage(['rasuvaeff/yii3-idempotency-db' => ['gcDivisor' => -1]]);
     }
 
     public function coreAndBackendDoNotShareDiKeys(): void

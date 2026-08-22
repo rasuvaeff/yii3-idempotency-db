@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Conditional deletes: the TTL boundary no longer allows a double execution.**
+  `load()` used to delete a row it judged expired with an unconditional
+  `DELETE ... WHERE key = :k`, which cannot tell that row from a fresh one a
+  competitor created in between. Two concurrent retries could each delete the
+  other's claim and both run the handler — the exact duplication this package
+  exists to prevent — and a late `release()` could delete a response another
+  process had already stored. Every delete except `deleteExpired()` now also
+  matches the `claimed` flag and an `expires_at` in the past, and `release()`
+  deletes only the claim this storage instance took: the `expires_at` a claim
+  writes is its ownership token, and a takeover after the claim went stale
+  necessarily writes a later one.
+- **The bundled migration no longer fails on MySQL.** `headers` and `body` were
+  declared `text NOT NULL DEFAULT '…'`; MySQL rejects a literal DEFAULT on a
+  TEXT column (error 1101), so `migrate:up` aborted having created nothing. The
+  defaults are gone — every INSERT this package issues writes both columns
+  explicitly, so nothing relied on them.
+- **A binary response body no longer breaks `store()`.** A body that is not
+  valid UTF-8 or holds a NUL byte (a PDF, a ZIP) is rejected by a PostgreSQL
+  `text` column, and the failure landed after the handler's side effects were
+  already committed — the client got a 500 and retried an operation that had in
+  fact run. Such a body is now base64-encoded on write and decoded on read.
+
+### Added
+
+- `M260822000000AddBodyEncodingColumn`, **a required migration**: it adds the
+  `body_encoding` column that every claim writes. Run `migrate:up` before
+  deploying this version — see [UPGRADE.md](UPGRADE.md).
+- `gcDivisor` constructor argument and param (default `1000`): roughly one
+  successful claim in `gcDivisor` also runs `deleteExpired()`. Nothing else
+  collected expired rows — an idempotency key is single-use, so the lazy cleanup
+  in `load()` practically never fires for a given key and the table grew without
+  bound unless the application wrote its own cron job. `gcDivisor: 0` keeps the
+  old, purely manual behaviour.
+
 ## 2.0.2 — 2026-08-04
 
 ### Fixed

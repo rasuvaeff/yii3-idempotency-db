@@ -31,8 +31,9 @@ $db->createCommand(sql: '
         "key"        VARCHAR(255) PRIMARY KEY,
         fingerprint  VARCHAR(64)  NOT NULL,
         status_code  INTEGER      NOT NULL DEFAULT 0,
-        headers      TEXT         NOT NULL DEFAULT \'{}\',
-        body         TEXT         NOT NULL DEFAULT \'\',
+        headers      TEXT         NOT NULL,
+        body         TEXT         NOT NULL,
+        body_encoding VARCHAR(16) NOT NULL DEFAULT \'plain\',
         expires_at   VARCHAR(30)  NOT NULL,
         claimed      INTEGER      NOT NULL DEFAULT 0
     )
