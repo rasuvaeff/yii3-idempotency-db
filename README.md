@@ -42,6 +42,7 @@ $storage = new DbIdempotencyStorage(
     clock: $clock,             // PSR-20 ClockInterface
     table: 'idempotency_keys',
     claimTtlSeconds: 3600,     // deadline for in-flight claims (stale-claim recovery)
+    gcDivisor: 1000,           // ~1 successful claim in 1000 also sweeps expired rows; 0 disables
 );
 
 $middleware = new IdempotencyMiddleware(
@@ -75,6 +76,14 @@ return [
 ./yii migrate:up
 ./yii migrate:down --limit=1
 ```
+
+The package ships two migrations, and **both are required**:
+`M260611000000CreateIdempotencyKeysTable` creates the table, and
+`M260822000000AddBodyEncodingColumn` adds the `body_encoding` column that every
+claim writes. An installation created before that column existed must run
+`migrate:up` before deploying this version — see [UPGRADE.md](UPGRADE.md).
+Reverting the second one needs a driver that implements `DROP COLUMN`, which
+`yiisoft/db-sqlite` does not.
 
 `yiisoft/db-migration` resolves the migration through `Injector::make()`, so
 it picks up the table-name value object from the container the same way the
@@ -112,9 +121,14 @@ table.
 | `fingerprint` | `VARCHAR(64)` | SHA-256 hash of method + path + query + body |
 | `status_code` | `SMALLINT` | HTTP response status code |
 | `headers` | `TEXT` | JSON-encoded response headers (`array<string, list<string>>`) |
-| `body` | `TEXT` | Response body |
+| `body` | `TEXT` | Response body (base64 when `body_encoding` says so) |
+| `body_encoding` | `VARCHAR(16)` | `plain` or `base64` — how `body` is stored |
 | `expires_at` | `VARCHAR(30)` | Expiration timestamp (UTC, `Y-m-d H:i:s`) |
 | `claimed` | `BOOLEAN` | Whether the key is claimed (in-progress) |
+
+`headers` and `body` deliberately carry no column DEFAULT: MySQL rejects a
+literal DEFAULT on a TEXT column (error 1101), and nothing needs one — every
+INSERT this package issues writes both columns explicitly.
 
 ### Yii3 integration
 
@@ -128,6 +142,7 @@ return [
     'rasuvaeff/yii3-idempotency-db' => [
         'table' => 'idempotency_keys',
         'claimTtlSeconds' => 3600,
+        'gcDivisor' => 1000,
     ],
 ];
 ```
@@ -139,17 +154,43 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
 1. **Claim**: `INSERT` with unique PK on `key` and `expires_at = now + claimTtlSeconds`.
    If the insert succeeds, the key is claimed atomically. A duplicate key raises a DB
    integrity error, which `claim()` converts to `false`; any other DB error propagates.
-2. **Store**: After the handler completes, the response is upserted into the row
-   and `claimed` is set to `0`; `expires_at` becomes the record TTL deadline.
+2. **Store**: After the handler completes, the response is written only into the
+   claim this instance owns: a conditional `UPDATE` matching the key, `claimed = 1`
+   and the exact `expires_at` this instance's claim wrote. If that row is gone — a
+   takeover deleted it after the deadline passed — the record is inserted only when
+   the key is absent; losing the duplicate-key race to a competitor's newer claim
+   leaves their row untouched. `claimed` ends at `0` and `expires_at` becomes the
+   record TTL deadline.
 3. **Load**: On a subsequent request with the same key, `load()` reads the row.
    An active claim (`claimed = 1`, deadline not reached) returns `null` without
    deleting the row — the middleware then fails its own `claim()` and responds 409.
    A stale claim (deadline passed — crashed process) is deleted and may be re-claimed.
    A completed record is rehydrated via `IdempotencyRecord::restore()` and checked
    against its TTL; expired records are deleted.
-4. **Release**: If the handler throws (or returns 5xx), `release()` deletes the claim row.
+4. **Release**: If the handler throws (or returns 5xx), `release()` deletes the
+   claim row — but only the claim this storage instance took. The `expires_at`
+   it wrote is the ownership token: a takeover after the claim went stale
+   necessarily wrote a later deadline, so a late release from the previous owner
+   matches no row and cannot delete either the competitor's claim or the
+   response it has already stored.
 5. **Cleanup**: `deleteExpired()` removes all rows past `expires_at` (uses the
-   `idx_idempotency_expires_at` index) — call it from a cron task.
+   expiration index — `idx_idempotency_expires_at` on the default table,
+   `idx_<table>_expires_at` for a custom one). Roughly one successful claim in
+   `gcDivisor` runs it in-band, so the table does not grow without a cron job;
+   set `gcDivisor: 0` to turn that off and drive the sweep yourself.
+
+Every delete this package issues besides `deleteExpired()` matches an ownership
+predicate, but the two kinds differ:
+
+| Operation | Condition |
+|---|---|
+| Expiration cleanup (`load()`, stale-claim reclaim) | The `claimed` flag the caller read plus `expires_at <= now` — the row must still be the expired one it judged |
+| Claim release (`release()`) | The **exact** `expires_at` this instance's own `claim()` wrote — the ownership token; a takeover necessarily wrote a later one |
+| Response store (`store()`) | The same exact-deadline token on the `UPDATE`; the fallback INSERT only into an absent key |
+
+An unconditional `DELETE WHERE key = :k` cannot tell the row the caller judged
+from a fresh one a competitor created in between, so at the TTL boundary two
+requests could each delete the other's claim and both run the handler.
 
 ## Security
 
@@ -157,6 +198,10 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
 - Fingerprints are SHA-256 hashes — no raw user input stored beyond the key.
 - Response bodies are stored as-is; avoid storing sensitive data without encryption
   at the application layer.
+- A body that is not valid UTF-8 (a PDF, a ZIP, anything with a NUL byte) is
+  base64-encoded on write and decoded on read. A `text` column cannot hold those
+  bytes — PostgreSQL rejects them — and failing there would fail a request whose
+  side effects are already committed.
 - All timestamps are stored in UTC — storage behavior does not depend on the PHP
   default timezone.
 

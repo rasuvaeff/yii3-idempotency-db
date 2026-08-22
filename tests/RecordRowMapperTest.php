@@ -225,6 +225,68 @@ final class RecordRowMapperTest
         }
     }
 
+    public function readsABodyVerbatimWhenTheEncodingColumnIsMissing(): void
+    {
+        // a row written before the column existed holds the body as it came
+        $record = $this->mapper->map($this->row(body: 'plain text'));
+
+        Assert::same($record->response->body, 'plain text');
+    }
+
+    public function readsABodyVerbatimWhenTheEncodingSaysPlain(): void
+    {
+        $record = $this->mapper->map($this->row(body: 'plain text', bodyEncoding: 'plain'));
+
+        Assert::same($record->response->body, 'plain text');
+    }
+
+    public function decodesABase64Body(): void
+    {
+        $binary = "\x00\xFF\xFEbinary";
+
+        $record = $this->mapper->map(
+            $this->row(body: base64_encode($binary), bodyEncoding: 'base64'),
+        );
+
+        Assert::same($record->response->body, $binary);
+    }
+
+    public function throwsOnUnknownBodyEncoding(): void
+    {
+        // a value nothing in this package writes means the row was tampered with
+        // or written by another version — returning the raw bytes would hand the
+        // client a corrupted response body
+        try {
+            $this->mapper->map($this->row(bodyEncoding: 'gzip'));
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::string($e->getMessage())->contains("'gzip'");
+        }
+    }
+
+    public function throwsOnNonStringBodyEncoding(): void
+    {
+        $row = $this->row();
+        $row['body_encoding'] = 42;
+
+        try {
+            $this->mapper->map($row);
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::string($e->getMessage())->contains('body_encoding');
+        }
+    }
+
+    public function throwsOnInvalidBase64Body(): void
+    {
+        try {
+            $this->mapper->map($this->row(body: 'not base64!!', bodyEncoding: 'base64'));
+            Assert::fail('Expected InvalidRecordRowException');
+        } catch (InvalidRecordRowException $e) {
+            Assert::string($e->getMessage())->contains('Invalid base64');
+        }
+    }
+
     private function row(
         string $key = 'order-123',
         string $fingerprint = 'abc123hash',
@@ -232,8 +294,9 @@ final class RecordRowMapperTest
         array|string $headers = '{"Content-Type":["application/json"]}',
         string $body = '{"status":"ok"}',
         string $expiresAt = '2026-06-12 12:00:00',
+        ?string $bodyEncoding = null,
     ): array {
-        return [
+        $row = [
             'key' => $key,
             'fingerprint' => $fingerprint,
             'status_code' => $statusCode,
@@ -241,6 +304,12 @@ final class RecordRowMapperTest
             'body' => $body,
             'expires_at' => $expiresAt,
         ];
+
+        if ($bodyEncoding !== null) {
+            $row['body_encoding'] = $bodyEncoding;
+        }
+
+        return $row;
     }
 
     private static function without(array $row, string $column): array

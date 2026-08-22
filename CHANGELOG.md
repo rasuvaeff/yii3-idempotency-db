@@ -1,5 +1,48 @@
 # Changelog
 
+## 2.1.0 — 2026-08-22
+
+### Fixed
+
+- **Conditional deletes: the TTL boundary no longer allows a double execution.**
+  `load()` used to delete a row it judged expired with an unconditional
+  `DELETE ... WHERE key = :k`, which cannot tell that row from a fresh one a
+  competitor created in between. Two concurrent retries could each delete the
+  other's claim and both run the handler — the exact duplication this package
+  exists to prevent. Expiration cleanup now also matches the `claimed` flag and
+  an `expires_at <= now`; claim release matches only the exact `expires_at`
+  this storage instance's own claim wrote — its ownership token, which a
+  takeover necessarily replaces with a later one.
+- **`store()` is fenced by the same ownership token.** The response used to be
+  written with an unconditional upsert, so after a takeover the original
+  handler's late store could overwrite the replacement claim — both responses
+  delivered. The write is now a conditional `UPDATE` matching this instance's
+  claim deadline; when that row is gone, the record is inserted only into an
+  absent key, and losing the duplicate-key race to a competitor's newer claim
+  leaves their row untouched.
+- **The bundled migration no longer fails on MySQL.** `headers` and `body` were
+  declared `text NOT NULL DEFAULT '…'`; MySQL rejects a literal DEFAULT on a
+  TEXT column (error 1101), so `migrate:up` aborted having created nothing. The
+  defaults are gone — every INSERT this package issues writes both columns
+  explicitly, so nothing relied on them.
+- **A binary response body no longer breaks `store()`.** A body that is not
+  valid UTF-8 or holds a NUL byte (a PDF, a ZIP) is rejected by a PostgreSQL
+  `text` column, and the failure landed after the handler's side effects were
+  already committed — the client got a 500 and retried an operation that had in
+  fact run. Such a body is now base64-encoded on write and decoded on read.
+
+### Added
+
+- `M260822000000AddBodyEncodingColumn`, **a required migration**: it adds the
+  `body_encoding` column that every claim writes. Run `migrate:up` before
+  deploying this version — see [UPGRADE.md](UPGRADE.md).
+- `gcDivisor` constructor argument and param (default `1000`): roughly one
+  successful claim in `gcDivisor` also runs `deleteExpired()`. Nothing else
+  collected expired rows — an idempotency key is single-use, so the lazy cleanup
+  in `load()` practically never fires for a given key and the table grew without
+  bound unless the application wrote its own cron job. `gcDivisor: 0` keeps the
+  old, purely manual behaviour.
+
 ## 2.0.2 — 2026-08-04
 
 ### Fixed

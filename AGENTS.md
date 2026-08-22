@@ -11,8 +11,10 @@ response replay through row mapping, and TTL-based expiration checked on `load()
 A migration for `yiisoft/db-migration` ships in `src/Migration/`.
 
 Namespace: `Rasuvaeff\Yii3IdempotencyDb`.
-Public API: `DbIdempotencyStorage`, `Exception\InvalidRecordRowException`.
-`RecordRowMapper` is `@internal` (row → `IdempotencyRecord` mapping, unit-tested directly).
+Public API: `DbIdempotencyStorage`, `Exception\InvalidRecordRowException`, and the
+two migrations in `Migration\`.
+`RecordRowMapper` and `ClaimDeadlines` are `@internal` (row → `IdempotencyRecord`
+mapping and the per-instance claim-ownership map, both unit-tested directly).
 
 ## Golden rules
 
@@ -81,13 +83,41 @@ make release-check
   claims (deadline passed) are deleted and re-claimable.
 - `store()` upserts the row with the full response data and sets `claimed = 0`.
 - `load()` checks TTL; expired records are deleted and `null` is returned.
+- **Every delete except `deleteExpired()` is conditional.** A delete matches the
+  `claimed` flag the caller read plus `expires_at <= now`; `release()` matches the
+  exact `expires_at` its own `claim()` wrote (remembered in `ClaimDeadlines`).
+  An unconditional `DELETE WHERE key = :k` cannot tell the row the caller judged
+  from a fresh one a competitor created in between — that is how the TTL boundary
+  used to allow two handlers to run. Never widen these conditions.
+- **`store()` is fenced by the same ownership token.** The response write is a
+  conditional `UPDATE` matching `key` + `claimed = 1` + the exact claim deadline;
+  when nothing matches (a takeover deleted the stale row), the record goes in as
+  a plain INSERT that loses the duplicate-key race to any newer row silently.
+  An unconditional upsert here let the slow original handler overwrite the
+  replacement claim after a takeover — both responses delivered. Reading and
+  spending the token is one `ClaimDeadlines::forget()` call; never replace the
+  fence with an upsert.
+- **A body that is not valid UTF-8, or holds a NUL byte, is base64-encoded** and
+  the row's `body_encoding` says so; a `text` column cannot hold those bytes
+  (PostgreSQL rejects them) and failing in `store()` fails a request whose side
+  effects are already committed.
+- **No literal DEFAULT on a TEXT column.** MySQL rejects it outright (error 1101)
+  and `migrate:up` aborts having created nothing. VARCHAR defaults are fine.
+- Roughly one successful `claim()` in `gcDivisor` also runs `deleteExpired()`;
+  `gcDivisor: 0` disables the in-band sweep. Tests construct the storage with
+  `gcDivisor: 0` unless the sweep itself is under test — `1` makes it fire on
+  every claim, deterministically.
 - Records are rehydrated via `IdempotencyRecord::restore()` (core >= 1.0 API);
   the constructor is private.
 - All timestamps are formatted/parsed in UTC (`Y-m-d H:i:s`) — never rely on the
   PHP default timezone.
 - `deleteExpired()` is the bulk GC entry point (uses the `expires_at` index).
-- `release()` deletes the row (used on handler error to unclaim).
+- `release()` deletes the claim row this instance took (used on handler error to
+  unclaim); it is a no-op against a finished record or a claim someone else owns.
 - Row → `IdempotencyRecord` mapping lives in `RecordRowMapper` (pure, unit-tested).
+- Both migrations are required; `M260822000000AddBodyEncodingColumn` adds the
+  column `claim()` writes, and its `down()` needs a driver with `DROP COLUMN`
+  (SQLite has none, so its revert test asserts the `NotSupportedException`).
 - The migration table name is a constructor argument, resolved by
   `Injector::make()` the same way as the storage. `setSourceNamespaces()`
   registration works as of `yiisoft/db-migration` ^2.1 — see the README.
@@ -101,6 +131,6 @@ make release-check
 
 ## When you finish
 
-- Update `README.md` (and `examples/` if usage changed); update `CHANGELOG.md`
-  when releasing.
+- Update `README.md` **and `README.ru.md`** (both languages, same commit; and
+  `examples/` if usage changed); update `CHANGELOG.md` when releasing.
 - Re-run `composer build` and paste the output.

@@ -62,8 +62,9 @@ final class SqliteIntegrationTest
                 "key"        VARCHAR(255) PRIMARY KEY,
                 fingerprint  VARCHAR(64)  NOT NULL,
                 status_code  INTEGER      NOT NULL DEFAULT 0,
-                headers      TEXT         NOT NULL DEFAULT \'{}\',
-                body         TEXT         NOT NULL DEFAULT \'\',
+                headers      TEXT         NOT NULL,
+                body         TEXT         NOT NULL,
+                body_encoding VARCHAR(16) NOT NULL DEFAULT \'plain\',
                 expires_at   VARCHAR(30)  NOT NULL,
                 claimed      INTEGER      NOT NULL DEFAULT 0
             )
@@ -274,7 +275,7 @@ final class SqliteIntegrationTest
 
         $storage->release(key: new IdempotencyKey(value: 'never-existed'));
 
-        Assert::true(true);
+        Assert::true(actual: true);
     }
 
     public function usesCustomTableName(): void
@@ -284,8 +285,9 @@ final class SqliteIntegrationTest
                 "key"        VARCHAR(255) PRIMARY KEY,
                 fingerprint  VARCHAR(64)  NOT NULL,
                 status_code  INTEGER      NOT NULL DEFAULT 0,
-                headers      TEXT         NOT NULL DEFAULT \'{}\',
-                body         TEXT         NOT NULL DEFAULT \'\',
+                headers      TEXT         NOT NULL,
+                body         TEXT         NOT NULL,
+                body_encoding VARCHAR(16) NOT NULL DEFAULT \'plain\',
                 expires_at   VARCHAR(30)  NOT NULL,
                 claimed      INTEGER      NOT NULL DEFAULT 0
             )
@@ -434,6 +436,172 @@ final class SqliteIntegrationTest
 
         Assert::notNull($loaded);
         Assert::same($loaded->response->body, 'ok');
+
+        // The inserted row is a finished record, not a claim.
+        Assert::same((int) $this->fetchRow('released-key')['claimed'], 0);
+    }
+
+    /**
+     * The write-side twin of the release fencing: after a takeover, the slow
+     * original handler's late store must not overwrite the claim that replaced
+     * it — an unconditional upsert would deliver both responses.
+     */
+    public function lateStoreAfterATakeoverKeepsTheReplacementClaim(): void
+    {
+        $key = new IdempotencyKey(value: 'late-store');
+        $first = $this->createStorage(claimTtlSeconds: 60);
+        $first->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'first'));
+
+        $this->now = $this->now->modify('+61 seconds');
+
+        $second = $this->createStorage(claimTtlSeconds: 60);
+        Assert::null($second->load(key: $key));
+        Assert::true($second->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'second')));
+
+        $first->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: new IdempotencyFingerprint(hash: 'first'),
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'late'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        // The replacement claim is intact and still in flight.
+        $row = $this->fetchRow('late-store');
+        Assert::notNull($row);
+        Assert::same($row['fingerprint'], 'second');
+        Assert::same((int) $row['claimed'], 1);
+        Assert::same($row['body'], '');
+    }
+
+    /**
+     * Same fence against a finished record: when the replacement owner has
+     * already stored their response, the late store must lose the duplicate-key
+     * race silently instead of rewriting history.
+     */
+    public function lateStoreDoesNotOverwriteAStoredRecord(): void
+    {
+        $key = new IdempotencyKey(value: 'late-vs-stored');
+        $first = $this->createStorage(claimTtlSeconds: 60);
+        $first->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'first'));
+
+        $this->now = $this->now->modify('+61 seconds');
+
+        $second = $this->createStorage(claimTtlSeconds: 60);
+        Assert::null($second->load(key: $key));
+        Assert::true($second->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'second')));
+        $second->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: new IdempotencyFingerprint(hash: 'second'),
+            response: new IdempotencyResponse(statusCode: 201, headers: [], body: 'replacement'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $first->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: new IdempotencyFingerprint(hash: 'first'),
+            response: new IdempotencyResponse(statusCode: 500, headers: [], body: 'late'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $row = $this->fetchRow('late-vs-stored');
+        Assert::notNull($row);
+        Assert::same($row['body'], 'replacement');
+        Assert::same((int) $row['status_code'], 201);
+        Assert::same((int) $row['claimed'], 0);
+    }
+
+    /**
+     * Two claims taken in the same second share an `expires_at` string, so a
+     * store fence without the key predicate could rewrite another key's row.
+     */
+    public function lateStoreDoesNotCrossKeysSharingADeadline(): void
+    {
+        $keyA = new IdempotencyKey(value: 'shared-a');
+        $keyB = new IdempotencyKey(value: 'shared-b');
+
+        $storageA = $this->createStorage(claimTtlSeconds: 60);
+        $storageB = $this->createStorage(claimTtlSeconds: 60);
+
+        Assert::true($storageA->claim(key: $keyA, fingerprint: new IdempotencyFingerprint(hash: 'a')));
+        Assert::true($storageB->claim(key: $keyB, fingerprint: new IdempotencyFingerprint(hash: 'b')));
+
+        $this->now = $this->now->modify('+10 seconds');
+
+        $storageA->store(record: IdempotencyRecord::restore(
+            key: $keyA,
+            fingerprint: new IdempotencyFingerprint(hash: 'a'),
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'from-a'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        // B's claim — same deadline string, still in flight — is untouched.
+        $rowB = $this->fetchRow('shared-b');
+        Assert::notNull($rowB);
+        Assert::same((int) $rowB['claimed'], 1);
+        Assert::same($rowB['body'], '');
+
+        $storageB->store(record: IdempotencyRecord::restore(
+            key: $keyB,
+            fingerprint: new IdempotencyFingerprint(hash: 'b'),
+            response: new IdempotencyResponse(statusCode: 201, headers: [], body: 'from-b'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        Assert::same($this->fetchRow('shared-a')['body'], 'from-a');
+        Assert::same($this->fetchRow('shared-b')['body'], 'from-b');
+    }
+
+    /**
+     * The fence's INSERT fallback is not only for a never-claimed key: when the
+     * claim row itself was swept mid-flight (GC after the deadline, manual
+     * cleanup), the finished record must still land.
+     */
+    public function storeInsertsAfterTheClaimRowWasSweptMidFlight(): void
+    {
+        $storage = $this->createStorage(claimTtlSeconds: 60);
+
+        $key = new IdempotencyKey(value: 'swept-mid-flight');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        // GC / an operator removed the row while the handler was running; the
+        // storage instance still remembers the claim deadline.
+        $this->db->createCommand()->delete(table: 'idempotency_keys', condition: ['key' => 'swept-mid-flight'])->execute();
+
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'survived'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $loaded = $storage->load(key: $key);
+
+        Assert::notNull($loaded);
+        Assert::same($loaded->response->body, 'survived');
+    }
+
+    /**
+     * The record TTL defaults to the claim TTL, so a finished row can carry
+     * the very `expires_at` the claim wrote — the `claimed` flag is what keeps
+     * a second store from rewriting it through the fence.
+     */
+    public function aSecondStoreDoesNotRewriteTheFinishedRecord(): void
+    {
+        $key = new IdempotencyKey(value: 'double-store');
+        $storage = $this->createStorage(claimTtlSeconds: 3600);
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        $recordOf = fn(string $body): \Rasuvaeff\Yii3Idempotency\IdempotencyRecord => IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: $body),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        );
+
+        $storage->store(record: $recordOf('first'));
+        $storage->store(record: $recordOf('second'));
+
+        Assert::same($this->fetchRow('double-store')['body'], 'first');
     }
 
     public function deleteExpiredRemovesOnlyExpiredRows(): void
@@ -520,13 +688,388 @@ final class SqliteIntegrationTest
         yield 'true' => ['true'];
     }
 
-    private function createStorage(int $claimTtlSeconds = 3600): DbIdempotencyStorage
+    public function releaseKeepsAClaimTakenOverAfterItWentStale(): void
+    {
+        // the fencing property: the deadline a claim wrote is its ownership
+        // token, and a takeover necessarily writes a later one, so a release
+        // arriving from the previous owner matches nothing
+        $key = new IdempotencyKey(value: 'fenced');
+        $first = $this->createStorage(claimTtlSeconds: 60);
+        $first->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'first'));
+
+        $this->now = $this->now->modify('+61 seconds');
+
+        $second = $this->createStorage(claimTtlSeconds: 60);
+        Assert::null($second->load(key: $key));
+        Assert::true($second->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'second')));
+
+        $first->release(key: $key);
+
+        $row = $this->fetchRow('fenced');
+        Assert::notNull($row);
+        Assert::same($row['fingerprint'], 'second');
+    }
+
+    public function releaseOwnsNothingItDidNotClaim(): void
+    {
+        // a release from a process that never took this claim — a retry that
+        // failed before claiming, a storage rebuilt mid-request — must not
+        // delete the claim whoever did take it is working under
+        $key = new IdempotencyKey(value: 'not-mine');
+        $owner = $this->createStorage();
+        $owner->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'owner'));
+
+        $this->createStorage()->release(key: $key);
+
+        $row = $this->fetchRow('not-mine');
+        Assert::notNull($row);
+        Assert::same($row['fingerprint'], 'owner');
+    }
+
+    public function releaseKeepsARecordWhoseTtlCoincidesWithTheClaimDeadline(): void
+    {
+        // claimTtlSeconds and the middleware's record TTL are both 3600 by
+        // default, so a claim taken and a response stored within the same second
+        // carry the SAME expires_at. The ownership token alone cannot tell those
+        // two rows apart — only the `claimed` flag can, and without it a release
+        // would delete a response already handed to the client.
+        $key = new IdempotencyKey(value: 'coincide');
+        $storage = $this->createStorage(claimTtlSeconds: 3600);
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'mine'));
+
+        // what a taking-over process would leave behind: a finished record whose
+        // TTL deadline happens to equal our claim deadline
+        $this->deleteRow('coincide');
+        $this->insertRow(
+            key: 'coincide',
+            fingerprint: 'competitor',
+            expiresAt: '2026-06-11 13:00:00',
+            claimed: false,
+            body: 'delivered',
+        );
+
+        $storage->release(key: $key);
+
+        $row = $this->fetchRow('coincide');
+        Assert::notNull($row);
+        Assert::same($row['body'], 'delivered');
+    }
+
+    public function releaseKeepsAStoredRecord(): void
+    {
+        // a late release from a process whose claim was taken over must not
+        // delete the response the taking-over process has already stored
+        $storage = $this->createStorage();
+        $key = new IdempotencyKey(value: 'stored-then-released');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+
+        $storage->claim(key: $key, fingerprint: $fingerprint);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: 'kept'),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $storage->release(key: $key);
+
+        $loaded = $storage->load(key: $key);
+        Assert::notNull($loaded);
+        Assert::same($loaded->response->body, 'kept');
+    }
+
+    public function reapingAStaleClaimSparesTheClaimThatReplacedIt(): void
+    {
+        // the competitor wins the race between load()'s SELECT and its DELETE:
+        // an unconditional "DELETE WHERE key = :k" would wipe its fresh claim
+        // and let a second handler run
+        $this->insertRow(key: 'takeover', fingerprint: 'stale', expiresAt: '2026-06-11 12:01:00', claimed: true);
+        $this->insertRow(key: 'other-stale', fingerprint: 'other', expiresAt: '2026-06-11 12:01:00', claimed: true);
+
+        $storage = $this->storageWithCompetitor(function (): void {
+            $this->deleteRow('takeover');
+            $this->insertRow(
+                key: 'takeover',
+                fingerprint: 'competitor',
+                expiresAt: '2026-06-11 12:10:00',
+                claimed: true,
+            );
+        });
+
+        Assert::null($storage->load(key: new IdempotencyKey(value: 'takeover')));
+
+        $row = $this->fetchRow('takeover');
+        Assert::notNull($row);
+        Assert::same($row['fingerprint'], 'competitor');
+        Assert::notNull($this->fetchRow('other-stale'));
+    }
+
+    public function reapingAStaleClaimSparesAFinishedRecord(): void
+    {
+        // the competitor finished while we were deciding: the row is no longer a
+        // claim, so the reap of a claim must not touch it even though it is
+        // expired by our reading of the clock
+        $this->insertRow(key: 'finished', fingerprint: 'stale', expiresAt: '2026-06-11 12:01:00', claimed: true);
+
+        $storage = $this->storageWithCompetitor(function (): void {
+            $this->deleteRow('finished');
+            $this->insertRow(
+                key: 'finished',
+                fingerprint: 'competitor',
+                expiresAt: '2026-06-11 12:01:30',
+                claimed: false,
+                body: 'done',
+            );
+        });
+
+        Assert::null($storage->load(key: new IdempotencyKey(value: 'finished')));
+
+        $row = $this->fetchRow('finished');
+        Assert::notNull($row);
+        Assert::same($row['fingerprint'], 'competitor');
+    }
+
+    public function reapingAnExpiredRecordSparesTheClaimThatReplacedIt(): void
+    {
+        // same race on the other branch of load(): the expired response is gone
+        // and a new claim already sits in its place
+        $this->insertRow(
+            key: 'retried',
+            fingerprint: 'old',
+            expiresAt: '2026-06-11 12:01:00',
+            claimed: false,
+            body: 'old-response',
+        );
+
+        $storage = $this->storageWithCompetitor(function (): void {
+            $this->deleteRow('retried');
+            $this->insertRow(
+                key: 'retried',
+                fingerprint: 'competitor',
+                expiresAt: '2026-06-11 12:10:00',
+                claimed: true,
+            );
+        });
+
+        Assert::null($storage->load(key: new IdempotencyKey(value: 'retried')));
+
+        $row = $this->fetchRow('retried');
+        Assert::notNull($row);
+        Assert::same($row['fingerprint'], 'competitor');
+        Assert::same((int) $row['claimed'], 1);
+    }
+
+    #[DataProvider('binaryBodyProvider')]
+    public function storeAndLoadRoundTripABinaryBody(string $body): void
+    {
+        // a PDF or a ZIP is not valid UTF-8: PostgreSQL rejects it in a text
+        // column, and the request whose side effects are already committed would
+        // fail on the way out
+        $storage = $this->createStorage();
+        $key = new IdempotencyKey(value: 'binary-body');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+
+        $storage->claim(key: $key, fingerprint: $fingerprint);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: $body),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $row = $this->fetchRow('binary-body');
+        Assert::notNull($row);
+        Assert::same($row['body_encoding'], 'base64');
+        Assert::same($row['body'], base64_encode($body));
+
+        $loaded = $storage->load(key: $key);
+        Assert::notNull($loaded);
+        Assert::same($loaded->response->body, $body);
+    }
+
+    public static function binaryBodyProvider(): iterable
+    {
+        // each case must fail exactly one of the two checks, so neither can be
+        // dropped without a test noticing
+        yield 'invalid utf-8, no NUL' => ["\xFF\xFEbinary"];
+        yield 'valid utf-8 with a NUL' => ["ok\x00tail"];
+        yield 'both' => ["%PDF-1.4\x00\xFF\xFEbinary\x00tail"];
+    }
+
+    #[DataProvider('plainBodyProvider')]
+    public function aTextBodyIsStoredVerbatim(string $body): void
+    {
+        $storage = $this->createStorage();
+        $key = new IdempotencyKey(value: 'text-body');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+
+        $storage->claim(key: $key, fingerprint: $fingerprint);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: $body),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $row = $this->fetchRow('text-body');
+        Assert::notNull($row);
+        Assert::same($row['body_encoding'], 'plain');
+        Assert::same($row['body'], $body);
+
+        $loaded = $storage->load(key: $key);
+        Assert::notNull($loaded);
+        Assert::same($loaded->response->body, $body);
+    }
+
+    public static function plainBodyProvider(): iterable
+    {
+        yield 'ascii' => ['{"status":"ok"}'];
+        yield 'multibyte utf-8' => ['{"город":"Москва","emoji":"🚀"}'];
+        yield 'empty' => [''];
+    }
+
+    public function claimRowIsWrittenAsPlain(): void
+    {
+        $this->createStorage()->claim(
+            key: new IdempotencyKey(value: 'claim-encoding'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        );
+
+        $row = $this->fetchRow('claim-encoding');
+        Assert::notNull($row);
+        Assert::same($row['body_encoding'], 'plain');
+    }
+
+    public function claimSweepsExpiredRowsWhenTheGcFires(): void
+    {
+        // nothing else collects them: an idempotency key is single-use, so the
+        // lazy cleanup in load() practically never runs for a given key
+        $this->insertRow(key: 'garbage', fingerprint: 'h0', expiresAt: '2026-06-11 11:00:00', claimed: false);
+
+        $storage = $this->createStorage(gcDivisor: 1);
+
+        Assert::true($storage->claim(
+            key: new IdempotencyKey(value: 'sweeper'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        ));
+
+        Assert::null($this->fetchRow('garbage'));
+        Assert::notNull($this->fetchRow('sweeper'));
+    }
+
+    public function claimSweepsNothingWhenTheDrawMisses(): void
+    {
+        // the sweep is probabilistic: with a divisor this large the draw
+        // realistically never hits, so an unconditional sweep shows up here
+        $this->insertRow(key: 'garbage', fingerprint: 'h0', expiresAt: '2026-06-11 11:00:00', claimed: false);
+
+        $storage = $this->createStorage(gcDivisor: PHP_INT_MAX);
+
+        $storage->claim(
+            key: new IdempotencyKey(value: 'sweeper'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        );
+
+        Assert::notNull($this->fetchRow('garbage'));
+    }
+
+    public function claimSweepsNothingWhenTheGcIsDisabled(): void
+    {
+        $this->insertRow(key: 'garbage', fingerprint: 'h0', expiresAt: '2026-06-11 11:00:00', claimed: false);
+
+        $storage = $this->createStorage(gcDivisor: 0);
+
+        $storage->claim(
+            key: new IdempotencyKey(value: 'sweeper'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        );
+
+        Assert::notNull($this->fetchRow('garbage'));
+    }
+
+    public function aRefusedClaimSweepsNothing(): void
+    {
+        // the sweep rides on a successful claim only: a losing request is
+        // already on the slow path and must not pay for a table scan too
+        $this->insertRow(key: 'garbage', fingerprint: 'h0', expiresAt: '2026-06-11 11:00:00', claimed: false);
+
+        $storage = $this->createStorage(gcDivisor: 1);
+        $key = new IdempotencyKey(value: 'contended');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+
+        $this->insertRow(key: 'contended', fingerprint: 'h1', expiresAt: '2026-06-11 13:00:00', claimed: true);
+
+        Assert::false($storage->claim(key: $key, fingerprint: $fingerprint));
+        Assert::notNull($this->fetchRow('garbage'));
+    }
+
+    public function rejectsNegativeGcDivisor(): void
+    {
+        Expect::exception(\InvalidArgumentException::class);
+
+        new DbIdempotencyStorage(
+            db: $this->db,
+            clock: $this->clock,
+            gcDivisor: -1,
+        );
+    }
+
+    private function createStorage(int $claimTtlSeconds = 3600, int $gcDivisor = 0): DbIdempotencyStorage
     {
         return new DbIdempotencyStorage(
             db: $this->db,
             clock: $this->clock,
             claimTtlSeconds: $claimTtlSeconds,
+            gcDivisor: $gcDivisor,
         );
+    }
+
+    /**
+     * A storage whose clock lets a competitor change the row between the SELECT
+     * `load()` makes and the conditional DELETE it issues afterwards.
+     */
+    private function storageWithCompetitor(\Closure $competitor): DbIdempotencyStorage
+    {
+        $now = new \DateTimeImmutable('2026-06-11 12:05:00');
+
+        return new DbIdempotencyStorage(
+            db: $this->db,
+            clock: new ScriptedClock(static function (int $call) use ($now, $competitor): \DateTimeImmutable {
+                if ($call === 2) {
+                    $competitor();
+                }
+
+                return $now;
+            }),
+            claimTtlSeconds: 60,
+            gcDivisor: 0,
+        );
+    }
+
+    private function insertRow(
+        string $key,
+        string $fingerprint,
+        string $expiresAt,
+        bool $claimed,
+        string $body = '',
+    ): void {
+        $this->db->createCommand(sql: '
+            INSERT INTO idempotency_keys ("key", fingerprint, status_code, headers, body, body_encoding, expires_at, claimed)
+            VALUES (:key, :fingerprint, 200, \'{}\', :body, \'plain\', :expires_at, :claimed)
+        ')->bindValues([
+            ':key' => $key,
+            ':fingerprint' => $fingerprint,
+            ':body' => $body,
+            ':expires_at' => $expiresAt,
+            ':claimed' => $claimed ? 1 : 0,
+        ])->execute();
+    }
+
+    private function deleteRow(string $key): void
+    {
+        $this->db->createCommand(sql: 'DELETE FROM idempotency_keys WHERE "key" = :key')
+            ->bindValues([':key' => $key])
+            ->execute();
     }
 
     private function fetchRow(string $key): ?array

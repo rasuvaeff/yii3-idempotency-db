@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3Idempotency\IdempotencyKey;
 use Rasuvaeff\Yii3IdempotencyDb\DbIdempotencyStorage;
 use Rasuvaeff\Yii3IdempotencyDb\IdempotencyKeysTableName;
 use Rasuvaeff\Yii3IdempotencyDb\Migration\M260611000000CreateIdempotencyKeysTable;
+use Rasuvaeff\Yii3IdempotencyDb\Migration\M260822000000AddBodyEncodingColumn;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Lifecycle\AfterTest;
@@ -78,9 +79,22 @@ final class MigrationTest
         Assert::null($this->db->getTableSchema('idempotency_keys', true));
     }
 
+    public function bothMigrationsComposeIntoTheRuntimeSchema(): void
+    {
+        // migrate:up runs them in order on a fresh install as well as on one
+        // created before the second migration existed
+        (new M260611000000CreateIdempotencyKeysTable())->up($this->builder);
+        (new M260822000000AddBodyEncodingColumn())->up($this->builder);
+
+        $schema = $this->db->getTableSchema('idempotency_keys', true);
+        Assert::notNull($schema);
+        Assert::notNull($schema->getColumn('body_encoding'));
+    }
+
     public function migratedTableIsUsableByStorage(): void
     {
         (new M260611000000CreateIdempotencyKeysTable())->up($this->builder);
+        (new M260822000000AddBodyEncodingColumn())->up($this->builder);
 
         $now = new \DateTimeImmutable('2026-06-11 12:00:00');
         $clock = new class ($now) implements ClockInterface {

@@ -32,6 +32,7 @@ return [
             clock: $clock,
             table: $table->value,
             claimTtlSeconds: (int) ($config['claimTtlSeconds'] ?? 3600),
+            gcDivisor: (int) ($config['gcDivisor'] ?? 1000),
         );
     },
 ];

@@ -13,6 +13,20 @@ composer require rasuvaeff/yii3-idempotency-db
   `claimTtlSeconds` deadline (stale claims from crashed processes are re-claimable).
 - Active claims make `load()` return `null` without deleting the row.
 - Expired records are deleted on `load()`; bulk cleanup via `deleteExpired()`.
+- Expiration cleanup (`load()`, stale-claim reclaim) is conditional (`claimed`
+  flag + `expires_at <= now`): an unconditional delete by key would let two
+  requests at the TTL boundary wipe each other's claim and both run the handler.
+- `release()` deletes only the claim this storage instance took: it matches the
+  exact `expires_at` its own `claim()` wrote — the ownership token; a takeover
+  writes a later one, so a late release matches nothing.
+- `store()` is fenced by the same token: a conditional `UPDATE` matching this
+  instance's claim deadline; if that row is gone, the record is inserted only
+  into an absent key — losing the duplicate-key race to a newer claim leaves
+  their row untouched.
+- Roughly one successful claim in `gcDivisor` also runs `deleteExpired()`;
+  `gcDivisor: 0` disables the in-band sweep.
+- A body that is not valid UTF-8 (or holds a NUL byte) is base64-encoded on
+  write; `body_encoding` records which form the row holds.
 - `claim()` returns `false` only on duplicate key; other DB errors propagate.
 - Timestamps are stored in UTC (`Y-m-d H:i:s`).
 - Invalid row data throws `InvalidRecordRowException`.
@@ -31,6 +45,7 @@ $storage = new DbIdempotencyStorage(
     clock: $clock,              // Psr\Clock\ClockInterface
     table: 'idempotency_keys',  // optional, default 'idempotency_keys'
     claimTtlSeconds: 3600,      // optional, in-flight claim deadline
+    gcDivisor: 1000,            // optional, in-band expired-row sweep; 0 disables
 );
 
 // Atomic claim — true if claimed, false if the key is already taken
@@ -42,7 +57,7 @@ $storage->store($record): void;
 // Load existing record; null if missing, expired, or claim still in flight
 $storage->load($key): ?IdempotencyRecord;
 
-// Release claim on handler error (deletes row)
+// Release claim on handler error (deletes only this instance's own claim row)
 $storage->release($key): void;
 
 // Bulk-delete all expired rows; returns number of deleted rows
@@ -73,12 +88,18 @@ try {
 | `key` | `VARCHAR(255)` PK | — | Idempotency key |
 | `fingerprint` | `VARCHAR(64)` | — | SHA-256 hash |
 | `status_code` | `SMALLINT` | `0` | HTTP status code |
-| `headers` | `TEXT` | `'{}'` | JSON response headers |
-| `body` | `TEXT` | `''` | Response body |
+| `headers` | `TEXT` | — | JSON response headers |
+| `body` | `TEXT` | — | Response body (base64 when `body_encoding` says so) |
+| `body_encoding` | `VARCHAR(16)` | `'plain'` | `plain` or `base64` |
 | `expires_at` | `VARCHAR(30)` | — | Expiration datetime (UTC) |
 | `claimed` | `BOOLEAN` | `false` | In-progress flag |
 
 ### Migration
+
+Two migrations ship in `Rasuvaeff\Yii3IdempotencyDb\Migration`, and both are
+required: `M260611000000CreateIdempotencyKeysTable` creates the table and
+`M260822000000AddBodyEncodingColumn` adds `body_encoding` (written by every
+claim; its `down()` needs a driver with `DROP COLUMN`, which SQLite lacks).
 
 Class is namespaced since 2.0 — register with
 `MigrationService::setSourceNamespaces()` (`['Rasuvaeff\Yii3IdempotencyDb\Migration']`),
@@ -108,6 +129,7 @@ return [
     'rasuvaeff/yii3-idempotency-db' => [
         'table' => 'idempotency_keys',
         'claimTtlSeconds' => 3600,
+        'gcDivisor' => 1000,
     ],
 ];
 ```
