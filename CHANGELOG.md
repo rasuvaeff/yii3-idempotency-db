@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.1 — 2026-08-22
+
+- Allow `rasuvaeff/yii3-idempotency` 2.x: everything this package consumes
+  (`IdempotencyStorage`, the key/record/response/fingerprint value objects) is
+  unchanged in 2.0.0 — its breaking changes live in the middleware and scope
+  resolvers, which this package does not touch. Widening the constraint lets an
+  application install the scoped-keys core release next to this storage without
+  a resolver conflict.
+
 ## 2.1.0 — 2026-08-22
 
 ### Fixed
