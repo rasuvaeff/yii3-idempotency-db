@@ -20,9 +20,8 @@ use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 
 /**
  * Exercises the package `config/di.php`, which is covered by neither cs, psalm,
- * nor the unit suite. The backend must bind exactly the swappable
- * `IdempotencyStorage` key and nothing the core package already binds —
- * yiisoft/config rejects duplicate keys across vendor packages.
+ * nor the unit suite. Cross-package merging is verified separately with a real
+ * yiisoft/config merge plan.
  */
 #[Test]
 #[CoversNothing]
@@ -30,9 +29,6 @@ final class ConfigWiringTest
 {
     public function bindsOnlyItsOwnKeys(): void
     {
-        // IdempotencyKeysTableName is this package's own type; the core binds
-        // neither it nor IdempotencyStorage, so there is nothing for
-        // yiisoft/config to call a duplicate
         Assert::same(
             array_keys($this->loadDb([])),
             [IdempotencyKeysTableName::class, IdempotencyStorage::class],
@@ -75,13 +71,6 @@ final class ConfigWiringTest
         $this->resolveStorage(['rasuvaeff/yii3-idempotency-db' => ['gcDivisor' => -1]]);
     }
 
-    public function coreAndBackendDoNotShareDiKeys(): void
-    {
-        $overlap = array_intersect_key($this->loadCore(), $this->loadDb([]));
-
-        Assert::same($overlap, [], 'core and -db must not define the same di key (yiisoft/config Duplicate key)');
-    }
-
     private function resolveStorage(array $params): IdempotencyStorage
     {
         $definitions = $this->loadDb($params);
@@ -113,11 +102,6 @@ final class ConfigWiringTest
     private function loadDb(array $params): array
     {
         return require dirname(__DIR__, 2) . '/config/di.php';
-    }
-
-    private function loadCore(): array
-    {
-        return require dirname(__DIR__, 2) . '/vendor/rasuvaeff/yii3-idempotency/config/di.php';
     }
 
     private function sqlite(): ConnectionInterface
