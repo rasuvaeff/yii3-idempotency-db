@@ -58,15 +58,16 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
-          # Mutation is by far the most expensive job, so it gets a narrower
-          # filter than the rest: only what can change which mutants exist or
-          # which tests kill them. Style and static-analysis configs, examples
-          # and this workflow cannot. Explicit trade: editing the mutation STEP
-          # here no longer re-runs it — a break surfaces on the next source
-          # change or a manual re-run, which beats paying the full mutation run
-          # on every docs and CI edit.
+          # Mutation is by far the most expensive job, so its filter is still
+          # narrower than the rest: only what can change which mutants exist
+          # or which tests kill them. Style and static-analysis configs and
+          # examples cannot. This workflow IS on the list, though: the
+          # coverage and mutation steps live here, so a change to them must
+          # re-run the job they configure — otherwise a break surfaces only on
+          # the next source change or a manual re-run.
           if git diff --quiet "$BASE" "$GITHUB_SHA" -- \
-            src tests composer.json testo.php infection.json5; then
+            src tests composer.json testo.php infection.json5 \
+            .github/workflows/build.yml; then
             echo "mutation=false" >> "$GITHUB_OUTPUT"
           else
             echo "mutation=true" >> "$GITHUB_OUTPUT"

@@ -89,6 +89,14 @@ make release-check
   An unconditional `DELETE WHERE key = :k` cannot tell the row the caller judged
   from a fresh one a competitor created in between — that is how the TTL boundary
   used to allow two handlers to run. Never widen these conditions.
+- **`store()` is fenced by the same ownership token.** The response write is a
+  conditional `UPDATE` matching `key` + `claimed = 1` + the exact claim deadline;
+  when nothing matches (a takeover deleted the stale row), the record goes in as
+  a plain INSERT that loses the duplicate-key race to any newer row silently.
+  An unconditional upsert here let the slow original handler overwrite the
+  replacement claim after a takeover — both responses delivered. Reading and
+  spending the token is one `ClaimDeadlines::forget()` call; never replace the
+  fence with an upsert.
 - **A body that is not valid UTF-8, or holds a NUL byte, is base64-encoded** and
   the row's `body_encoding` says so; a `text` column cannot hold those bytes
   (PostgreSQL rejects them) and failing in `store()` fails a request whose side

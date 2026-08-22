@@ -8,22 +8,11 @@
         "summary": "build/infection-summary.log"
     },
     "testFramework": "testo",
-    // 4 named equivalent survivors (no ignores, no lowering):
-    // - DbIdempotencyStorage.php `catch (IntegrityException) { return false; }`
-    //   (Return_) and `if ($affected <= 0)` (LessThanOrEqualTo -> `< 0`), both
-    //   in claim(). insert() against a real DB backend either affects exactly
-    //   one row or throws IntegrityException on the unique-key conflict, so
-    //   neither branch can be reached with a different outcome: dropping the
-    //   catch's return falls through to `$affected <= 0` on an undefined
-    //   variable, which returns false all the same. Forcing the zero-affected
-    //   case would need a fake Connection double as a src-level test seam.
-    // - DbIdempotencyStorage.php `$this->claimDeadlines->forget(...)` in
-    //   store() (MethodCallRemoval). Dropping the spent ownership token is
-    //   bookkeeping: whether or not the deadline stays in the map, release()
-    //   afterwards matches no row, because the stored row is `claimed = 0` and
-    //   carries the record TTL rather than the claim deadline. The only effect
-    //   is the map's size in a long-running worker, which ClaimDeadlines caps
-    //   anyway — there is nothing observable to assert on.
+    // Named equivalent survivors (no ignores, no lowering):
+    // - DbIdempotencyStorage::store(), the early `return` after the fenced
+    //   UPDATE succeeded (ReturnRemoval). A fall-through INSERT loses the
+    //   duplicate-key race to the row the UPDATE just finished and is
+    //   swallowed — the end state is byte-identical either way.
     // - RecordRowMapper.php `throw new InvalidRecordRowException(...)` removed
     //   (Throw_), in extractInt()'s isset guard. Falling through lands on the
     //   function's final fallback throw, which raises the exact same class with

@@ -18,22 +18,15 @@ namespace Rasuvaeff\Yii3IdempotencyDb;
  *
  * @internal
  */
-final class ClaimDeadlines
+final readonly class ClaimDeadlines
 {
-    private const int MAX_ENTRIES = 1024;
-
-    /**
-     * @var array<string, string>
-     */
-    private array $deadlines = [];
+    public function __construct(
+        private ClaimDeadlineMap $map = new ClaimDeadlineMap(),
+    ) {}
 
     public function remember(string $key, string $deadline): void
     {
-        if (\count($this->deadlines) >= self::MAX_ENTRIES) {
-            array_shift($this->deadlines);
-        }
-
-        $this->deadlines[$key] = $deadline;
+        $this->map->set($key, $deadline);
     }
 
     /**
@@ -41,10 +34,6 @@ final class ClaimDeadlines
      */
     public function forget(string $key): ?string
     {
-        $deadline = $this->deadlines[$key] ?? null;
-
-        unset($this->deadlines[$key]);
-
-        return $deadline;
+        return $this->map->remove($key);
     }
 }

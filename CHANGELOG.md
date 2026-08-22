@@ -9,12 +9,17 @@
   `DELETE ... WHERE key = :k`, which cannot tell that row from a fresh one a
   competitor created in between. Two concurrent retries could each delete the
   other's claim and both run the handler — the exact duplication this package
-  exists to prevent — and a late `release()` could delete a response another
-  process had already stored. Every delete except `deleteExpired()` now also
-  matches the `claimed` flag and an `expires_at` in the past, and `release()`
-  deletes only the claim this storage instance took: the `expires_at` a claim
-  writes is its ownership token, and a takeover after the claim went stale
-  necessarily writes a later one.
+  exists to prevent. Expiration cleanup now also matches the `claimed` flag and
+  an `expires_at <= now`; claim release matches only the exact `expires_at`
+  this storage instance's own claim wrote — its ownership token, which a
+  takeover necessarily replaces with a later one.
+- **`store()` is fenced by the same ownership token.** The response used to be
+  written with an unconditional upsert, so after a takeover the original
+  handler's late store could overwrite the replacement claim — both responses
+  delivered. The write is now a conditional `UPDATE` matching this instance's
+  claim deadline; when that row is gone, the record is inserted only into an
+  absent key, and losing the duplicate-key race to a competitor's newer claim
+  leaves their row untouched.
 - **The bundled migration no longer fails on MySQL.** `headers` and `body` were
   declared `text NOT NULL DEFAULT '…'`; MySQL rejects a literal DEFAULT on a
   TEXT column (error 1101), so `migrate:up` aborted having created nothing. The

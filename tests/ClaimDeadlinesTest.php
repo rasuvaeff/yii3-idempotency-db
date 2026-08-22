@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3IdempotencyDb\Tests;
 
+use Rasuvaeff\Yii3IdempotencyDb\ClaimDeadlineMap;
 use Rasuvaeff\Yii3IdempotencyDb\ClaimDeadlines;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -12,6 +13,7 @@ use Testo\Test;
 
 #[Test]
 #[Covers(ClaimDeadlines::class)]
+#[Covers(ClaimDeadlineMap::class)]
 final class ClaimDeadlinesTest
 {
     private const int MAX_ENTRIES = 1024;

@@ -106,7 +106,7 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
         $deadline = $this->formatDateTime($this->clock->now()->modify("+{$this->claimTtlSeconds} seconds"));
 
         try {
-            $affected = $this->db->createCommand()->insert(
+            $this->db->createCommand()->insert(
                 table: $this->table,
                 columns: [
                     'key' => $key->value,
@@ -120,10 +120,8 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
                 ],
             )->execute();
         } catch (IntegrityException) {
-            return false;
-        }
-
-        if ($affected <= 0) {
+            // The unique PK on `key` is the atomicity: a duplicate means the
+            // claim was taken (or the response already stored) by someone else.
             return false;
         }
 
@@ -133,28 +131,78 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
         return true;
     }
 
+    /**
+     * Writes the response only into the claim this instance owns.
+     *
+     * An unconditional upsert has no ownership predicate: after a takeover (the
+     * claim deadline passed, a competitor deleted the stale row and claimed
+     * fresh), the original handler's late store would overwrite the
+     * replacement claim with a response its owner never wrote — and both
+     * responses end up delivered, which is the duplication this package
+     * exists to prevent. The update therefore matches `claimed = 1` and the
+     * exact `expires_at` this instance's `claim()` wrote — the same ownership
+     * token {@see self::release()} deletes by.
+     *
+     * When nothing matches, the claim row is gone (a takeover, or GC swept it)
+     * or was never this instance's. The finished record is then written only
+     * into an absent key: the INSERT either lands on the now-free key or loses
+     * the duplicate-key race to a competitor's newer claim — which is left in
+     * place untouched.
+     */
     #[\Override]
     public function store(IdempotencyRecord $record): void
     {
         $headers = json_encode(value: $record->response->headers, flags: JSON_THROW_ON_ERROR);
         [$body, $encoding] = $this->encodeBody($record->response->body);
 
-        $this->db->createCommand()->upsert(
-            table: $this->table,
-            insertColumns: [
-                'key' => $record->key->value,
-                'fingerprint' => $record->fingerprint->hash,
-                'status_code' => $record->response->statusCode,
-                'headers' => $headers,
-                'body' => $body,
-                'body_encoding' => $encoding,
-                'expires_at' => $this->formatDateTime($record->expiresAt),
-                'claimed' => 0,
-            ],
-        )->execute();
+        // Reading and spending the token is one operation: a store that ran
+        // twice must not fence twice.
+        $deadline = $this->claimDeadlines->forget(key: $record->key->value);
 
-        // The claim is finished, so its ownership token is spent.
-        $this->claimDeadlines->forget($record->key->value);
+        if ($deadline !== null) {
+            $affected = $this->db->createCommand()->update(
+                table: $this->table,
+                columns: [
+                    'status_code' => $record->response->statusCode,
+                    'headers' => $headers,
+                    'body' => $body,
+                    'body_encoding' => $encoding,
+                    'expires_at' => $this->formatDateTime($record->expiresAt),
+                    'claimed' => 0,
+                ],
+                condition: [
+                    'and',
+                    ['key' => $record->key->value],
+                    ['expires_at' => $deadline],
+                ],
+            )->execute();
+
+            // Our claim row took the response; the token is already spent.
+            if ($affected > 0) {
+                return;
+            }
+        }
+
+        try {
+            $this->db->createCommand()->insert(
+                table: $this->table,
+                columns: [
+                    'key' => $record->key->value,
+                    'fingerprint' => $record->fingerprint->hash,
+                    'status_code' => $record->response->statusCode,
+                    'headers' => $headers,
+                    'body' => $body,
+                    'body_encoding' => $encoding,
+                    'expires_at' => $this->formatDateTime($record->expiresAt),
+                    'claimed' => 0,
+                ],
+            )->execute();
+        } catch (IntegrityException) {
+            // The claim row is gone (a takeover deleted it after the deadline
+            // passed) and a competitor's newer claim — or their stored record —
+            // owns the key now. Overwriting it is exactly what this fence
+            // exists to prevent.
+        }
     }
 
     #[\Override]

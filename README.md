@@ -154,8 +154,13 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
 1. **Claim**: `INSERT` with unique PK on `key` and `expires_at = now + claimTtlSeconds`.
    If the insert succeeds, the key is claimed atomically. A duplicate key raises a DB
    integrity error, which `claim()` converts to `false`; any other DB error propagates.
-2. **Store**: After the handler completes, the response is upserted into the row
-   and `claimed` is set to `0`; `expires_at` becomes the record TTL deadline.
+2. **Store**: After the handler completes, the response is written only into the
+   claim this instance owns: a conditional `UPDATE` matching the key, `claimed = 1`
+   and the exact `expires_at` this instance's claim wrote. If that row is gone — a
+   takeover deleted it after the deadline passed — the record is inserted only when
+   the key is absent; losing the duplicate-key race to a competitor's newer claim
+   leaves their row untouched. `claimed` ends at `0` and `expires_at` becomes the
+   record TTL deadline.
 3. **Load**: On a subsequent request with the same key, `load()` reads the row.
    An active claim (`claimed = 1`, deadline not reached) returns `null` without
    deleting the row — the middleware then fails its own `claim()` and responds 409.
@@ -169,16 +174,23 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
    matches no row and cannot delete either the competitor's claim or the
    response it has already stored.
 5. **Cleanup**: `deleteExpired()` removes all rows past `expires_at` (uses the
-   `idx_idempotency_expires_at` index). Roughly one successful claim in
+   expiration index — `idx_idempotency_expires_at` on the default table,
+   `idx_<table>_expires_at` for a custom one). Roughly one successful claim in
    `gcDivisor` runs it in-band, so the table does not grow without a cron job;
    set `gcDivisor: 0` to turn that off and drive the sweep yourself.
 
-Every delete this package issues besides `deleteExpired()` is conditional on the
-row still being the one the caller judged — its `claimed` flag and an
-`expires_at` in the past. An unconditional `DELETE WHERE key = :k` cannot tell
-that row from a fresh one a competitor created in between, so at the TTL
-boundary two requests could each delete the other's claim and both run the
-handler.
+Every delete this package issues besides `deleteExpired()` matches an ownership
+predicate, but the two kinds differ:
+
+| Operation | Condition |
+|---|---|
+| Expiration cleanup (`load()`, stale-claim reclaim) | The `claimed` flag the caller read plus `expires_at <= now` — the row must still be the expired one it judged |
+| Claim release (`release()`) | The **exact** `expires_at` this instance's own `claim()` wrote — the ownership token; a takeover necessarily wrote a later one |
+| Response store (`store()`) | The same exact-deadline token on the `UPDATE`; the fallback INSERT only into an absent key |
+
+An unconditional `DELETE WHERE key = :k` cannot tell the row the caller judged
+from a fresh one a competitor created in between, so at the TTL boundary two
+requests could each delete the other's claim and both run the handler.
 
 ## Security
 
