@@ -190,7 +190,7 @@ jobs:
           exit $code
 
       - name: Mutation testing
-        run: composer mutation -- --threads=1
+        run: composer mutation -- -vvv --debug
 
   compatibility:
     name: Backward compatibility
