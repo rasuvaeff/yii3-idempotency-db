@@ -78,7 +78,7 @@ final class ConfigWiringTest
         Assert::true(is_callable($factory));
 
         $now = new \DateTimeImmutable('2026-06-11 12:00:00');
-        $clock = new class ($now) implements ClockInterface {
+        $clock = new readonly class ($now) implements ClockInterface {
             public function __construct(
                 private \DateTimeImmutable $now,
             ) {}

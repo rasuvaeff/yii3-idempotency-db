@@ -81,6 +81,12 @@ make release-check
 - Claim rows carry `expires_at = now + claimTtlSeconds` (in-flight deadline).
   `load()` returns `null` for an active claim WITHOUT deleting the row; stale
   claims (deadline passed) are deleted and re-claimable.
+- `claimedFingerprint()` implements the core's `ClaimedFingerprintProvider`
+  (core ^2.1): a pure read of the `fingerprint` column over an active claim
+  (`claimed = 1`) — a finished record answers `null`. The middleware uses it
+  to answer 422 instead of a retryable 409 on an in-flight payload mismatch;
+  keep it a read with no side effects, exactly like `load()`'s stale-claim
+  cleanup stays in `load()`.
 - `store()` upserts the row with the full response data and sets `claimed = 0`.
 - `load()` checks TTL; expired records are deleted and `null` is returned.
 - **Every delete except `deleteExpired()` is conditional.** A delete matches the

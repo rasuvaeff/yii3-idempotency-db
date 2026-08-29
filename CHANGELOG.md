@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0 — 2026-08-29
+
+- **BREAKING.** Requires `rasuvaeff/yii3-idempotency` ^2.1: the storage now
+  implements the `ClaimedFingerprintProvider` capability introduced there, and
+  the core 1.x line does not carry the interface. Applications staying on
+  core 1.x stay on 2.x of this package.
+- `DbIdempotencyStorage::claimedFingerprint()` reads the `fingerprint` column
+  of an active claim (`claimed = 1`), letting the middleware answer 422 instead
+  of a retryable 409 when a key is reused with a different payload while the
+  original request is still being processed
+  (rasuvaeff/yii3-idempotency#21).
+
 ## 2.1.1 — 2026-08-22
 
 - Allow `rasuvaeff/yii3-idempotency` 2.x: everything this package consumes
