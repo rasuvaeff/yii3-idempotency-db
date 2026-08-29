@@ -199,7 +199,7 @@ final readonly class RecordRowMapper
         try {
             return new \DateTimeImmutable($expiresAt, new \DateTimeZone('UTC'));
         } catch (\Exception $e) {
-            throw new InvalidRecordRowException(message: sprintf('Invalid "expires_at" datetime: %s', $expiresAt), code: is_int($e->getCode()) ? $e->getCode() : 0, previous: $e);
+            throw new InvalidRecordRowException(message: sprintf('Invalid "expires_at" datetime: %s', $expiresAt), previous: $e);
         }
     }
 
