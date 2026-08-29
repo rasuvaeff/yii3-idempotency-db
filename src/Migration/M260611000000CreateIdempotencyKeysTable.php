@@ -24,10 +24,10 @@ use Yiisoft\Db\Migration\TransactionalMigrationInterface;
  *
  * @api
  */
-final class M260611000000CreateIdempotencyKeysTable implements RevertibleMigrationInterface, TransactionalMigrationInterface
+final readonly class M260611000000CreateIdempotencyKeysTable implements RevertibleMigrationInterface, TransactionalMigrationInterface
 {
     public function __construct(
-        private readonly IdempotencyKeysTableName $table = new IdempotencyKeysTableName(),
+        private IdempotencyKeysTableName $table = new IdempotencyKeysTableName(),
     ) {}
 
     #[\Override]

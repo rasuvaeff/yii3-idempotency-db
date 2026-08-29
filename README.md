@@ -163,8 +163,10 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
    record TTL deadline.
 3. **Load**: On a subsequent request with the same key, `load()` reads the row.
    An active claim (`claimed = 1`, deadline not reached) returns `null` without
-   deleting the row — the middleware then fails its own `claim()` and responds 409.
-   A stale claim (deadline passed — crashed process) is deleted and may be re-claimed.
+   deleting the row — the middleware then fails its own `claim()` and asks
+   `claimedFingerprint()`: the same payload answers 409, a different one 422
+   (the retry could never succeed). A stale claim (deadline passed — crashed
+   process) is deleted and may be re-claimed.
    A completed record is rehydrated via `IdempotencyRecord::restore()` and checked
    against its TTL; expired records are deleted.
 4. **Release**: If the handler throws (or returns 5xx), `release()` deletes the

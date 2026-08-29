@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3IdempotencyDb;
 
 use Psr\Clock\ClockInterface;
+use Rasuvaeff\Yii3Idempotency\ClaimedFingerprintProvider;
 use Rasuvaeff\Yii3Idempotency\IdempotencyFingerprint;
 use Rasuvaeff\Yii3Idempotency\IdempotencyKey;
 use Rasuvaeff\Yii3Idempotency\IdempotencyRecord;
@@ -16,7 +17,7 @@ use Yiisoft\Db\Query\Query;
 /**
  * @api
  */
-final readonly class DbIdempotencyStorage implements IdempotencyStorage
+final readonly class DbIdempotencyStorage implements IdempotencyStorage, ClaimedFingerprintProvider
 {
     private string $table;
 
@@ -98,6 +99,24 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
         }
 
         return $record;
+    }
+
+    /**
+     * A pure read on the row `claim()` wrote, so the middleware can tell an
+     * in-flight duplicate from a key reused with a different payload while the
+     * original request is still being processed. Only an active claim answers;
+     * a finished record has no claim to report, however fresh it is.
+     */
+    #[\Override]
+    public function claimedFingerprint(IdempotencyKey $key): ?IdempotencyFingerprint
+    {
+        $fingerprint = (new Query($this->db))
+            ->select(['fingerprint'])
+            ->from($this->table)
+            ->where(condition: ['and', ['key' => $key->value], ['claimed' => true]])
+            ->scalar();
+
+        return \is_string($fingerprint) ? new IdempotencyFingerprint($fingerprint) : null;
     }
 
     #[\Override]
@@ -309,7 +328,7 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage
         }
 
         if (\is_string($value)) {
-            return $value === '1' || $value === 't' || $value === 'true';
+            return in_array($value, ['1', 't', 'true'], strict: true);
         }
 
         return false;

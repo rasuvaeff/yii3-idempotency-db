@@ -51,10 +51,7 @@ final readonly class RecordRowMapper
         try {
             $key = new IdempotencyKey(value: $keyValue);
         } catch (\InvalidArgumentException $e) {
-            throw new InvalidRecordRowException(
-                message: sprintf('Invalid key in DB row: %s', $e->getMessage()),
-                previous: $e,
-            );
+            throw new InvalidRecordRowException(message: sprintf('Invalid key in DB row: %s', $e->getMessage()), code: $e->getCode(), previous: $e);
         }
 
         $headers = $this->extractHeaders(row: $row);
@@ -129,10 +126,7 @@ final readonly class RecordRowMapper
                     headers: json_decode(json: $row['headers'], associative: true, flags: JSON_THROW_ON_ERROR),
                 );
             } catch (\JsonException $e) {
-                throw new InvalidRecordRowException(
-                    message: sprintf('Invalid "headers" JSON: %s', $e->getMessage()),
-                    previous: $e,
-                );
+                throw new InvalidRecordRowException(message: sprintf('Invalid "headers" JSON: %s', $e->getMessage()), code: $e->getCode(), previous: $e);
             }
         }
 
@@ -205,10 +199,7 @@ final readonly class RecordRowMapper
         try {
             return new \DateTimeImmutable($expiresAt, new \DateTimeZone('UTC'));
         } catch (\Exception $e) {
-            throw new InvalidRecordRowException(
-                message: sprintf('Invalid "expires_at" datetime: %s', $expiresAt),
-                previous: $e,
-            );
+            throw new InvalidRecordRowException(message: sprintf('Invalid "expires_at" datetime: %s', $expiresAt), previous: $e);
         }
     }
 

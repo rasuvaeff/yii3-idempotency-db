@@ -352,6 +352,63 @@ final class SqliteIntegrationTest
         Assert::false($storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1')));
     }
 
+    public function claimedFingerprintReturnsFingerprintOfActiveClaim(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'in-flight');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        $claimed = $storage->claimedFingerprint(key: $key);
+
+        Assert::notNull($claimed);
+        Assert::same($claimed->hash, 'h1');
+    }
+
+    public function claimedFingerprintIsNullForMissingKey(): void
+    {
+        $storage = $this->createStorage();
+
+        Assert::null($storage->claimedFingerprint(key: new IdempotencyKey(value: 'missing-key')));
+    }
+
+    public function claimedFingerprintFiltersByTheQueriedKey(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->claim(key: new IdempotencyKey(value: 'other'), fingerprint: new IdempotencyFingerprint(hash: 'h2'));
+
+        Assert::null($storage->claimedFingerprint(key: new IdempotencyKey(value: 'in-flight')));
+    }
+
+    public function claimedFingerprintIsNullForStoredRecord(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'finished');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+        $storage->claim(key: $key, fingerprint: $fingerprint);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: ''),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        Assert::null($storage->claimedFingerprint(key: $key));
+    }
+
+    public function claimedFingerprintIsNullAfterRelease(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'released');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+        $storage->release(key: $key);
+
+        Assert::null($storage->claimedFingerprint(key: $key));
+    }
+
     public function staleClaimCanBeReclaimedAfterDeadline(): void
     {
         $storage = $this->createStorage(claimTtlSeconds: 60);
