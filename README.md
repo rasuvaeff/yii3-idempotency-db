@@ -165,7 +165,10 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
    An active claim (`claimed = 1`, deadline not reached) returns `null` without
    deleting the row — the middleware then fails its own `claim()` and asks
    `claimedFingerprint()`: the same payload answers 409, a different one 422
-   (the retry could never succeed). A stale claim (deadline passed — crashed
+   (the retry could never succeed). The same read one column over,
+   `claimedDeadline()`, hands the middleware the claim's remaining seconds —
+   the 409 then carries a `Retry-After` header. A stale claim (deadline
+   passed — crashed
    process) is deleted and may be re-claimed.
    A completed record is rehydrated via `IdempotencyRecord::restore()` and checked
    against its TTL; expired records are deleted.

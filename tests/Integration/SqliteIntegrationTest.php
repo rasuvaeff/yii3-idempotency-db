@@ -409,6 +409,57 @@ final class SqliteIntegrationTest
         Assert::null($storage->claimedFingerprint(key: $key));
     }
 
+    public function claimedDeadlineReturnsDeadlineOfActiveClaim(): void
+    {
+        $storage = $this->createStorage(claimTtlSeconds: 1200);
+
+        $key = new IdempotencyKey(value: 'in-flight');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+
+        $deadline = $storage->claimedDeadline(key: $key);
+
+        Assert::notNull($deadline);
+        Assert::same(
+            $deadline->getTimestamp(),
+            $this->now->modify('+1200 seconds')->getTimestamp(),
+        );
+    }
+
+    public function claimedDeadlineIsNullForMissingKey(): void
+    {
+        $storage = $this->createStorage();
+
+        Assert::null($storage->claimedDeadline(key: new IdempotencyKey(value: 'missing-key')));
+    }
+
+    public function claimedDeadlineIsNullForStoredRecord(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'finished');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+        $storage->claim(key: $key, fingerprint: $fingerprint);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(statusCode: 200, headers: [], body: ''),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        Assert::null($storage->claimedDeadline(key: $key));
+    }
+
+    public function claimedDeadlineIsNullAfterRelease(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'released');
+        $storage->claim(key: $key, fingerprint: new IdempotencyFingerprint(hash: 'h1'));
+        $storage->release(key: $key);
+
+        Assert::null($storage->claimedDeadline(key: $key));
+    }
+
     public function staleClaimCanBeReclaimedAfterDeadline(): void
     {
         $storage = $this->createStorage(claimTtlSeconds: 60);

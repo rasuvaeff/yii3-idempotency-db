@@ -8,7 +8,9 @@ composer require rasuvaeff/yii3-idempotency-db
 
 ## Rules
 
-- `DbIdempotencyStorage` implements `IdempotencyStorage` from `rasuvaeff/yii3-idempotency`.
+- `DbIdempotencyStorage` implements `IdempotencyStorage` from `rasuvaeff/yii3-idempotency`,
+  plus the `ClaimedFingerprintProvider` (in-flight 422 vs 409) and
+  `ClaimedDeadlineProvider` (`Retry-After` on the in-flight 409) capabilities.
 - Atomic claim via `INSERT` with unique PK on `key` column; claim rows carry a
   `claimTtlSeconds` deadline (stale claims from crashed processes are re-claimable).
 - Active claims make `load()` return `null` without deleting the row.
