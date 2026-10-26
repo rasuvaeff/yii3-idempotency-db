@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 — 2026-10-26
 
 - `DbIdempotencyStorage` implements the `ClaimedDeadlineProvider` capability
   (rasuvaeff/yii3-idempotency#31, shipped in core 2.2.0):
