@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3IdempotencyDb;
 
 use Psr\Clock\ClockInterface;
+use Rasuvaeff\Yii3Idempotency\ClaimedDeadlineProvider;
 use Rasuvaeff\Yii3Idempotency\ClaimedFingerprintProvider;
 use Rasuvaeff\Yii3Idempotency\IdempotencyFingerprint;
 use Rasuvaeff\Yii3Idempotency\IdempotencyKey;
@@ -17,7 +18,7 @@ use Yiisoft\Db\Query\Query;
 /**
  * @api
  */
-final readonly class DbIdempotencyStorage implements IdempotencyStorage, ClaimedFingerprintProvider
+final readonly class DbIdempotencyStorage implements IdempotencyStorage, ClaimedFingerprintProvider, ClaimedDeadlineProvider
 {
     private string $table;
 
@@ -117,6 +118,28 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage, Claimed
             ->scalar();
 
         return \is_string($fingerprint) ? new IdempotencyFingerprint($fingerprint) : null;
+    }
+
+    /**
+     * The deadline the in-flight claim's `expires_at` column holds — the same
+     * read shape as {@see self::claimedFingerprint()}, one column over: a
+     * claimed row answers, a finished record or an absent key does not. The
+     * middleware turns the remaining seconds into the 409's `Retry-After`.
+     */
+    #[\Override]
+    public function claimedDeadline(IdempotencyKey $key): ?\DateTimeImmutable
+    {
+        $row = (new Query($this->db))
+            ->from($this->table)
+            ->where(condition: ['and', ['key' => $key->value], ['claimed' => true]])
+            ->one();
+
+        if ($row === null) {
+            return null;
+        }
+
+        /** @var array<array-key, mixed> $row */
+        return (new RecordRowMapper())->expiresAt(row: $row);
     }
 
     #[\Override]

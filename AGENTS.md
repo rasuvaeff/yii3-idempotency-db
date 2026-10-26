@@ -87,6 +87,11 @@ make release-check
   to answer 422 instead of a retryable 409 on an in-flight payload mismatch;
   keep it a read with no side effects, exactly like `load()`'s stale-claim
   cleanup stays in `load()`.
+- `claimedDeadline()` implements the core's `ClaimedDeadlineProvider`
+  (core ^2.2): the same read one column over — `expires_at` of an active
+  claim, parsed by `RecordRowMapper::expiresAt()`. The middleware turns the
+  remaining seconds into the in-flight 409's `Retry-After`. Same read-only
+  rule as `claimedFingerprint()`.
 - `store()` upserts the row with the full response data and sets `claimed = 0`.
 - `load()` checks TTL; expired records are deleted and `null` is returned.
 - **Every delete except `deleteExpired()` is conditional.** A delete matches the

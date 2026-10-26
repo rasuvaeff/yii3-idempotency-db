@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `DbIdempotencyStorage` implements the `ClaimedDeadlineProvider` capability
+  (rasuvaeff/yii3-idempotency#31, shipped in core 2.2.0):
+  `claimedDeadline()` reads the `expires_at` column of an active claim
+  (`claimed = 1`), letting the middleware add `Retry-After` with the remaining
+  seconds to the in-flight 409. Requires `rasuvaeff/yii3-idempotency` ^2.2 —
+  core 2.1 does not carry the interface.
+
 ## 3.0.0 — 2026-08-29
 
 - **BREAKING.** Requires `rasuvaeff/yii3-idempotency` ^2.1: the storage now
