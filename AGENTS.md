@@ -114,6 +114,16 @@ make release-check
   effects are already committed.
 - **No literal DEFAULT on a TEXT column.** MySQL rejects it outright (error 1101)
   and `migrate:up` aborts having created nothing. VARCHAR defaults are fine.
+- **`CrossDatabaseMigrationTest` is the only place the DDL meets a real
+  engine.** Everything else runs on SQLite, which accepts DDL MySQL rejects.
+  Locally: start MySQL/PostgreSQL containers matching the `database-integration`
+  job (db and password `idempotency`), then
+  `IDEMPOTENCY_TEST_DB=mysql vendor/bin/testo --suite=Integration` in a PHP
+  image that has `pdo_mysql`/`pdo_pgsql` — the plain `composer:2` image has
+  neither. `MigrationTest::textColumnsCarryNoLiteralDefault` is the cheap guard
+  that runs on every PR without containers.
+- **`database-integration` is deliberately ungated.** A matrix job skipped by
+  the `changes` filter reports one check under the raw, unexpanded name.
 - Roughly one successful `claim()` in `gcDivisor` also runs `deleteExpired()`;
   `gcDivisor: 0` disables the in-band sweep. Tests construct the storage with
   `gcDivisor: 0` unless the sweep itself is under test — `1` makes it fire on

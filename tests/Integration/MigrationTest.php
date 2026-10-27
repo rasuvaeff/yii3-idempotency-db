@@ -118,4 +118,26 @@ final class MigrationTest
 
         Assert::true($claimed);
     }
+
+    /**
+     * The cheap container-free half of the ER-049 regression: MySQL and
+     * MariaDB reject a literal DEFAULT on a TEXT column outright (error 1101)
+     * and `migrate:up` aborts having created nothing, while SQLite — the only
+     * engine this suite sees — accepts it. `CrossDatabaseMigrationTest` runs
+     * the DDL against the real engines; this assert fires on every PR without
+     * containers. `body_encoding` is VARCHAR and keeps its default on purpose.
+     */
+    public function textColumnsCarryNoLiteralDefault(): void
+    {
+        (new M260611000000CreateIdempotencyKeysTable())->up($this->builder);
+
+        $schema = $this->db->getTableSchema('idempotency_keys', true);
+        Assert::notNull($schema);
+
+        foreach (['headers', 'body'] as $column) {
+            $columnSchema = $schema->getColumn($column);
+            Assert::notNull($columnSchema);
+            Assert::null($columnSchema->getDefaultValue(), "Column \"{$column}\" must not carry a DEFAULT");
+        }
+    }
 }
