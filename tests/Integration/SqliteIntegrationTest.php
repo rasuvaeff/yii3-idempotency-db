@@ -340,6 +340,45 @@ final class SqliteIntegrationTest
         Assert::same($loaded->response->headers, ['Content-Type' => ['application/json']]);
     }
 
+    /**
+     * A Post/Redirect/Get outcome: since the core's `cacheableRedirectStatuses`
+     * (2.3.0) a `303 See Other` snapshot is stored like a success, and the row
+     * must round-trip with its status and the `Location` header intact — the
+     * storage persists any status and never has, but this pins the PRG shape
+     * the core now relies on (rasuvaeff/yii3-idempotency#35).
+     */
+    public function aSeeOtherSnapshotRoundTripsWithItsLocationHeader(): void
+    {
+        $storage = $this->createStorage();
+
+        $key = new IdempotencyKey(value: 'prg-303');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+
+        $storage->claim(key: $key, fingerprint: $fingerprint);
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(
+                statusCode: 303,
+                headers: ['Location' => ['/guestbook?page=3']],
+                body: '',
+            ),
+            expiresAt: $this->now->modify('+3600 seconds'),
+        ));
+
+        $row = $this->fetchRow('prg-303');
+        Assert::notNull($row);
+        Assert::same((int) $row['status_code'], 303);
+        Assert::same((int) $row['claimed'], 0);
+
+        $loaded = $storage->load(key: $key);
+
+        Assert::notNull($loaded);
+        Assert::same($loaded->response->statusCode, 303);
+        Assert::same($loaded->response->headers, ['Location' => ['/guestbook?page=3']]);
+        Assert::same($loaded->response->body, '');
+    }
+
     public function loadReturnsNullForActiveClaimWithoutDeletingIt(): void
     {
         $storage = $this->createStorage();
