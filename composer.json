@@ -31,7 +31,7 @@
     "require-dev": {
         "ergebnis/composer-normalize": "^2.51",
         "friendsofphp/php-cs-fixer": "^3.95",
-        "infection/infection": "^0.33",
+        "infection/infection": "^0.35",
         "maglnet/composer-require-checker": "^4.17",
         "rasuvaeff/rector-named-literals": "^1.0",
         "rector/rector": "^2.4",
@@ -40,6 +40,8 @@
         "testo/testo": "^0.10.25",
         "vimeo/psalm": "^6.16",
         "yiisoft/cache": "^3.2",
+        "yiisoft/db-mysql": "^2.0",
+        "yiisoft/db-pgsql": "^2.0",
         "yiisoft/db-sqlite": "^2.0",
         "yiisoft/injector": "^1.2",
         "yiisoft/test-support": "^3.0"
@@ -62,7 +64,9 @@
         },
         "platform": {
             "ext-bcmath": "1.0.0",
-            "ext-intl": "1.0.0"
+            "ext-intl": "1.0.0",
+            "ext-pdo_mysql": "1.0.0",
+            "ext-pdo_pgsql": "1.0.0"
         },
         "sort-packages": true
     },
