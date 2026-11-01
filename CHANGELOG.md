@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Mutation testing now counts code the tests execute without naming it in `#[Covers]`
+  (`infection --with-uncovered`), with `PublicVisibility` off and default-parameter
+  signature lines ignored; tests added for the `claimed` column flag reading (bool, int, string and other driver shapes) and for `claimedDeadline()` filtering by key. No `src/` changes.
+
 ## 3.1.0 — 2026-10-26
 
 - `DbIdempotencyStorage` implements the `ClaimedDeadlineProvider` capability

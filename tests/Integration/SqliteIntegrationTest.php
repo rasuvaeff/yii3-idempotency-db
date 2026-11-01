@@ -464,6 +464,15 @@ final class SqliteIntegrationTest
         );
     }
 
+    public function claimedDeadlineFiltersByTheQueriedKey(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->claim(key: new IdempotencyKey(value: 'other'), fingerprint: new IdempotencyFingerprint(hash: 'h2'));
+
+        Assert::null($storage->claimedDeadline(key: new IdempotencyKey(value: 'in-flight')));
+    }
+
     public function claimedDeadlineIsNullForMissingKey(): void
     {
         $storage = $this->createStorage();
