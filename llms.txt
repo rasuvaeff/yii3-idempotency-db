@@ -26,7 +26,8 @@ composer require rasuvaeff/yii3-idempotency-db
   into an absent key — losing the duplicate-key race to a newer claim leaves
   their row untouched.
 - Roughly one successful claim in `gcDivisor` also runs `deleteExpired()`;
-  `gcDivisor: 0` disables the in-band sweep.
+  `gcDivisor: 0` disables the in-band sweep. A failed sweep does not fail the
+  claim, unless it ran inside the caller's transaction.
 - A body that is not valid UTF-8 (or holds a NUL byte) is base64-encoded on
   write; `body_encoding` records which form the row holds.
 - `claim()` returns `false` only on duplicate key; other DB errors propagate.

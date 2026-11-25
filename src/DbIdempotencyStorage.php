@@ -12,8 +12,10 @@ use Rasuvaeff\Yii3Idempotency\IdempotencyKey;
 use Rasuvaeff\Yii3Idempotency\IdempotencyRecord;
 use Rasuvaeff\Yii3Idempotency\IdempotencyStorage;
 use Yiisoft\Db\Connection\ConnectionInterface;
+use Yiisoft\Db\Exception\Exception;
 use Yiisoft\Db\Exception\IntegrityException;
 use Yiisoft\Db\Query\Query;
+use Yiisoft\Db\Transaction\TransactionInterface;
 
 /**
  * @api
@@ -168,7 +170,7 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage, Claimed
         }
 
         $this->claimDeadlines->remember($key->value, $deadline);
-        $this->collectGarbage();
+        $this->sweepAfterClaim();
 
         return true;
     }
@@ -215,6 +217,7 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage, Claimed
                 condition: [
                     'and',
                     ['key' => $record->key->value],
+                    ['claimed' => true],
                     ['expires_at' => $deadline],
                 ],
             )->execute();
@@ -300,6 +303,23 @@ final readonly class DbIdempotencyStorage implements IdempotencyStorage, Claimed
                 ['<=', 'expires_at', $this->formatDateTime($this->clock->now())],
             ],
         )->execute();
+    }
+
+    /**
+     * A failed sweep must not fail the claim that is already taken: the key would
+     * stay claimed with nobody to process it. Inside a caller's transaction the
+     * failure may have rolled the claim back or aborted the transaction, so there
+     * the claim cannot be vouched for and the failure is passed on.
+     */
+    private function sweepAfterClaim(): void
+    {
+        try {
+            $this->collectGarbage();
+        } catch (Exception $failure) {
+            if ($this->db->getTransaction() instanceof TransactionInterface) {
+                throw $failure;
+            }
+        }
     }
 
     private function collectGarbage(): void

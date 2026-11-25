@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 3.1.1 — 2026-11-25
 
+- Fixed: a failed in-band sweep of expired rows no longer fails the `claim()` that
+  already succeeded and leaves its key claimed until `claimTtlSeconds` passes. Inside
+  a caller's transaction the failure is still passed on (#33).
+- Fixed: the `UPDATE` in `store()` now also matches `claimed`, as documented (#33).
+- CI: `release.yml` verifies that the tag points at validated master history.
 - Mutation testing now counts code the tests execute without naming it in `#[Covers]`
   (`infection --with-uncovered`), with `PublicVisibility` off and default-parameter
   signature lines ignored; tests added for the `claimed` column flag reading (bool, int, string and other driver shapes) and for `claimedDeadline()` filtering by key. No `src/` changes.
