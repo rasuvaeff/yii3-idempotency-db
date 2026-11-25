@@ -125,7 +125,9 @@ make release-check
 - **`database-integration` is deliberately ungated.** A matrix job skipped by
   the `changes` filter reports one check under the raw, unexpanded name.
 - Roughly one successful `claim()` in `gcDivisor` also runs `deleteExpired()`;
-  `gcDivisor: 0` disables the in-band sweep. Tests construct the storage with
+  `gcDivisor: 0` disables the in-band sweep. A failed sweep is swallowed (the claim
+  is already taken), except inside a caller's transaction, where a deadlock may
+  have rolled the claim back. Tests construct the storage with
   `gcDivisor: 0` unless the sweep itself is under test — `1` makes it fire on
   every claim, deterministically.
 - Records are rehydrated via `IdempotencyRecord::restore()` (core >= 1.0 API);

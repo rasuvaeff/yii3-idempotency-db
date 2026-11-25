@@ -182,7 +182,8 @@ DI wiring binds `IdempotencyStorage::class` to `DbIdempotencyStorage`.
    expiration index — `idx_idempotency_expires_at` on the default table,
    `idx_<table>_expires_at` for a custom one). Roughly one successful claim in
    `gcDivisor` runs it in-band, so the table does not grow without a cron job;
-   set `gcDivisor: 0` to turn that off and drive the sweep yourself.
+   set `gcDivisor: 0` to turn that off and drive the sweep yourself. A failed in-band sweep does not fail the claim, unless
+   it ran inside your transaction.
 
 Every delete this package issues besides `deleteExpired()` matches an ownership
 predicate, but the two kinds differ:

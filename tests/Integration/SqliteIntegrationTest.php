@@ -20,6 +20,7 @@ use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
+use Yiisoft\Db\Exception\Exception;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
@@ -1159,6 +1160,56 @@ final class SqliteIntegrationTest
         Assert::notNull($this->fetchRow('garbage'));
     }
 
+    public function aFailedSweepDoesNotFailTheClaim(): void
+    {
+        $this->insertRow(key: 'garbage', fingerprint: 'h0', expiresAt: '2026-06-11 11:00:00', claimed: false);
+        $this->makeDeletesFail();
+
+        Assert::true($this->createStorage(gcDivisor: 1)->claim(
+            key: new IdempotencyKey(value: 'sweeper'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        ));
+
+        Assert::notNull($this->fetchRow('sweeper'));
+        Assert::notNull($this->fetchRow('garbage'));
+    }
+
+    public function aFailedSweepInsideATransactionIsPassedOn(): void
+    {
+        $this->insertRow(key: 'garbage', fingerprint: 'h0', expiresAt: '2026-06-11 11:00:00', claimed: false);
+        $this->makeDeletesFail();
+        $this->db->beginTransaction();
+
+        Expect::exception(Exception::class);
+
+        $this->createStorage(gcDivisor: 1)->claim(
+            key: new IdempotencyKey(value: 'sweeper'),
+            fingerprint: new IdempotencyFingerprint(hash: 'h1'),
+        );
+    }
+
+    public function storeLeavesAFinishedRowWithTheSameDeadlineAlone(): void
+    {
+        $storage = $this->createStorage();
+        $key = new IdempotencyKey(value: 'finished');
+        $fingerprint = new IdempotencyFingerprint(hash: 'h1');
+        $storage->claim(key: $key, fingerprint: $fingerprint);
+        $this->db->createCommand()->update(
+            table: 'idempotency_keys',
+            columns: ['claimed' => 0, 'body' => 'theirs'],
+            condition: ['key' => 'finished'],
+        )->execute();
+
+        $storage->store(record: IdempotencyRecord::restore(
+            key: $key,
+            fingerprint: $fingerprint,
+            response: new IdempotencyResponse(statusCode: 201, headers: [], body: 'ours'),
+            expiresAt: $this->now->modify('+60 seconds'),
+        ));
+
+        Assert::same($this->fetchRow('finished')['body'] ?? null, 'theirs');
+    }
+
     public function rejectsNegativeGcDivisor(): void
     {
         Expect::exception(\InvalidArgumentException::class);
@@ -1167,6 +1218,15 @@ final class SqliteIntegrationTest
             db: $this->db,
             clock: $this->clock,
             gcDivisor: -1,
+        );
+    }
+
+    private function makeDeletesFail(): void
+    {
+        // straight through PDO: the SQLite command splits a statement at the `;` in the trigger body
+        Assert::instanceOf($this->db, SqliteConnection::class);
+        $this->db->getActivePdo()->exec(
+            "CREATE TRIGGER refuse_delete BEFORE DELETE ON idempotency_keys BEGIN SELECT RAISE(ABORT, 'refused'); END",
         );
     }
 
